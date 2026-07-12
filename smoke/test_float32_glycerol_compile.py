@@ -24,7 +24,7 @@ def energy_and_gradient(target, samples):
 
 def main() -> None:
     assert not jax.config.x64_enabled
-    target = Molecular_Potential.from_bundle("glycerol_gaff2_am1bcc_obc1_v1")
+    target = Molecular_Potential.from_bundle("glycerol_gaff2_am1bcc_obc1_v2")
     reference = target.reference_internal()[None]
     samples = jnp.repeat(reference, 2, axis=0)
     assert samples.dtype == jnp.float32
@@ -35,6 +35,27 @@ def main() -> None:
     energy_grad_s = time.perf_counter() - started
     assert energy.dtype == jnp.float32 and gradient.dtype == jnp.float32
     assert bool(jnp.isfinite(energy).all() & jnp.isfinite(gradient).all())
+
+    angle_index = target.coordinates.n_bonds
+    offset = target.coordinates.angle_offset[0]
+    scale = target.coordinates.angle_scale[0]
+    near_boundary = jnp.repeat(reference, 2, axis=0)
+    near_boundary = near_boundary.at[:, angle_index].set(
+        (jnp.asarray([-30.0, 30.0]) - offset) / scale
+    )
+    boundary_energy, boundary_gradient = energy_and_gradient(target, near_boundary)
+    jax.block_until_ready((boundary_energy, boundary_gradient))
+    assert bool(
+        jnp.isfinite(boundary_energy).all()
+        & jnp.isfinite(boundary_gradient).all()
+    )
+
+    saturated = jnp.repeat(reference, 2, axis=0)
+    saturated = saturated.at[:, angle_index].set(
+        (jnp.asarray([-100.0, 100.0]) - offset) / scale
+    )
+    saturated_energy = target(saturated)
+    assert bool(jnp.logical_not(jnp.isnan(saturated_energy)).all())
 
     started = time.perf_counter()
     moved, acceptance = mixed_mala(

@@ -20,7 +20,10 @@ finite gradients. A public compatibility test verifies the committed `jflows`
 signatures and compiled stage-training scheme, chunked public sampling calls,
 and the transform primitives used by `jflows_md`. Molecular controller tests
 verify fixed-shape chunk execution, disjoint PRNG streams, versioned artifact
-round trips, and the default float32 runtime. A bounded two-particle
+round trips (including schema-2 activation, dtype, static masks, and stage
+counts), and the default float32 runtime. Bundle tests enforce complete
+hash/path closure, frozen built-in manifests and lineage, and consistent
+quotient-measure metadata. A bounded two-particle
 glycerol test compiles the real energy/gradient and one MALA step. A tiny
 synthetic `R^2 x T^1` case compiles and runs the
 mixed KL+X trainer, one adaptive Boltzmann-generator stage, and the G-native

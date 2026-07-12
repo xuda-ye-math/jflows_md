@@ -3,8 +3,9 @@
 
 Each bundle contains its own immutable seed artifact: exact PRMTOP/RST7 files
 for FAB ADP and the explicit-H input MOL2 for each GAFF2 small molecule. The
-builder stages those inputs before replacing a bundle, so no external assets
-directory is required.
+builder stages those inputs in a temporary candidate, then accepts only an
+exact match to the frozen manifest. A changed seed, toolchain, or output must
+use a new bundle version, and no external assets directory is required.
 
 Run from the repository root with
 
@@ -28,7 +29,43 @@ import tempfile
 MOLECULAR_ROOT = Path(__file__).resolve().parents[1]
 
 from jflows_md.core.builder import write_bundle  # noqa: E402
-from jflows_md.system import sha256_file  # noqa: E402
+from jflows_md.system import (  # noqa: E402
+    Molecular_Bundle,
+    _FROZEN_BUNDLE_MANIFEST_SHA256,
+    sha256_file,
+)
+
+
+def bundle_seed(current_name: str) -> Path:
+    """Return a verified seed carried by an exactly frozen built-in bundle."""
+    current = MOLECULAR_ROOT / "bundles" / current_name
+    if not current.is_dir():
+        raise FileNotFoundError(f"bundle seed is missing: {current}")
+    expected = _FROZEN_BUNDLE_MANIFEST_SHA256.get(current_name)
+    if expected is None:
+        raise ValueError(f"bundle has no frozen-manifest gate: {current_name}")
+    actual = sha256_file(current / "manifest.json")
+    if actual != expected:
+        raise ValueError(
+            "bundle seed changed without a new bundle version: "
+            f"{actual} != {expected}"
+        )
+    return Molecular_Bundle.load(current, verify=True).path
+
+
+def verify_frozen_rebuild(candidate: Path, bundle_name: str) -> Path:
+    """Accept an exact candidate; any scientific change requires a new name."""
+    Molecular_Bundle.load(candidate, verify=True)
+    expected = _FROZEN_BUNDLE_MANIFEST_SHA256[bundle_name]
+    actual = sha256_file(candidate / "manifest.json")
+    if actual != expected:
+        raise ValueError(
+            f"rebuild of {bundle_name} changed its frozen payload; create a new "
+            f"bundle version ({actual} != {expected})"
+        )
+    # The checked-in bundle is already byte-identical. Leaving it in place
+    # avoids a destructive replacement while still exercising the full build.
+    return bundle_seed(bundle_name)
 
 
 def run(command: list[str], cwd: Path, log_name: str) -> None:
@@ -66,9 +103,31 @@ def parameterize_small_molecule(
     prefix = Path(os.environ.get("CONDA_PREFIX", ""))
     if not prefix or not (prefix / "bin/antechamber").is_file():
         raise RuntimeError("run this builder inside the AmberTools-enabled jflows environment")
+    frozen_record = json.loads(
+        (source_mol2.parent / "build_record.json").read_text(encoding="utf-8")
+    )
+    hashes = amber_data_hashes(prefix)
+    version = ambertools_version(prefix)
+    expected_toolchain = {
+        "ambertools_version": frozen_record["ambertools_version"],
+        "amber_data_sha256": frozen_record["amber_data_sha256"],
+    }
+    actual_toolchain = {
+        "ambertools_version": version,
+        "amber_data_sha256": hashes,
+    }
+    if actual_toolchain != expected_toolchain:
+        raise ValueError(
+            "AmberTools installation differs from the frozen bundle toolchain; "
+            f"a changed build requires a new bundle version: "
+            f"{actual_toolchain} != {expected_toolchain}"
+        )
     with tempfile.TemporaryDirectory(prefix=f"jflows_md_{name}_") as temporary:
         work = Path(temporary)
         shutil.copy2(source_mol2, work / "input.mol2")
+        coordinate_upgrade = source_mol2.parent / "coordinate_measure_upgrade.json"
+        if coordinate_upgrade.is_file():
+            shutil.copy2(coordinate_upgrade, work / coordinate_upgrade.name)
         run(
             [
                 str(prefix / "bin/antechamber"),
@@ -159,8 +218,6 @@ quit
             re.sub(r"=\s+[0-9]+\.[0-9]+ seconds", "= <timing> seconds", sqm_output.read_text()),
             encoding="utf-8",
         )
-        hashes = amber_data_hashes(prefix)
-        version = ambertools_version(prefix)
         build_record = {
             "name": name,
             "canonical_smiles": canonical_smiles,
@@ -193,8 +250,12 @@ quit
             "sqm.transcript": work / "sqm.out",
             "build_record.json": work / "build_record.json",
         }
-        return write_bundle(
-            MOLECULAR_ROOT / "bundles" / bundle_name,
+        if (work / "coordinate_measure_upgrade.json").is_file():
+            provenance["coordinate_measure_upgrade.json"] = (
+                work / "coordinate_measure_upgrade.json"
+            )
+        candidate = write_bundle(
+            work / "candidate_bundle",
             name=bundle_name,
             target=name,
             prmtop_path=work / "molecule.prmtop",
@@ -219,17 +280,24 @@ quit
             minimize=True,
             provenance_files=provenance,
         )
+        return verify_frozen_rebuild(candidate, bundle_name)
 
 
 def build_adp() -> Path:
-    output = MOLECULAR_ROOT / "bundles/fab_adp_ff96_obc1_v1"
-    # write_bundle replaces output, so stage the bundle-contained seeds first.
+    name = "fab_adp_ff96_obc1_v2"
+    seed = bundle_seed(name)
+    # Build from staged bundle-contained seeds without modifying the source.
     with tempfile.TemporaryDirectory(prefix="jflows_md_adp_") as temporary:
         work = Path(temporary)
         prmtop = work / "system.prmtop"
         coordinate = work / "system.rst7"
-        shutil.copy2(output / "system.prmtop", prmtop)
-        shutil.copy2(output / "system.rst7", coordinate)
+        coordinate_upgrade = work / "coordinate_measure_upgrade.json"
+        shutil.copy2(seed / "system.prmtop", prmtop)
+        shutil.copy2(seed / "system.rst7", coordinate)
+        shutil.copy2(
+            seed / "provenance/coordinate_measure_upgrade.json",
+            coordinate_upgrade,
+        )
         expected = {
             prmtop: "2ce81216c7e18fd4d354fac44e22ba3843d89e297884bd6389a4cd57c74ecf6e",
             coordinate: "b8a151fd35b909de52b7f50b09f4a0c9fc5221d0b423c6a9ec3133bf867c4954",
@@ -237,9 +305,9 @@ def build_adp() -> Path:
         for path, digest in expected.items():
             if sha256_file(path) != digest:
                 raise ValueError(f"canonical FAB artifact hash mismatch: {path}")
-        return write_bundle(
-            output,
-            name="fab_adp_ff96_obc1_v1",
+        candidate = write_bundle(
+            work / "candidate_bundle",
+            name=name,
             target="adp",
             prmtop_path=prmtop,
             coordinate_path=coordinate,
@@ -259,47 +327,52 @@ def build_adp() -> Path:
             expected_formula="C6H12N2O2",
             expected_charge=0,
             minimize=False,
+            provenance_files={
+                "coordinate_measure_upgrade.json": coordinate_upgrade,
+            },
         )
+        return verify_frozen_rebuild(candidate, name)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--only", choices=("adp", "glycerol", "diethanolamine"))
     args = parser.parse_args()
-    bundles = MOLECULAR_ROOT / "bundles"
     outputs = []
     if args.only in (None, "adp"):
         outputs.append(build_adp())
     if args.only in (None, "glycerol"):
+        name = "glycerol_gaff2_am1bcc_obc1_v2"
         outputs.append(
             parameterize_small_molecule(
                 name="glycerol",
                 source_mol2=(
-                    bundles
-                    / "glycerol_gaff2_am1bcc_obc1_v1/provenance/input.mol2"
+                    bundle_seed(name)
+                    / "provenance/input.mol2"
                 ),
-                bundle_name="glycerol_gaff2_am1bcc_obc1_v1",
+                bundle_name=name,
                 canonical_smiles="OCC(O)CO",
                 formula="C3H8O3",
                 diagnostic="full support; both central-carbon determinant signs",
             )
         )
     if args.only in (None, "diethanolamine"):
+        name = "diethanolamine_neutral_gaff2_am1bcc_obc1_v2"
         outputs.append(
             parameterize_small_molecule(
                 name="diethanolamine",
                 source_mol2=(
-                    bundles
-                    / "diethanolamine_neutral_gaff2_am1bcc_obc1_v1/provenance/input.mol2"
+                    bundle_seed(name)
+                    / "provenance/input.mol2"
                 ),
-                bundle_name="diethanolamine_neutral_gaff2_am1bcc_obc1_v1",
+                bundle_name=name,
                 canonical_smiles="OCCNCCO",
                 formula="C4H11NO2",
                 diagnostic="neutral microstate; both nitrogen-pyramid signs",
             )
         )
     for output in outputs:
-        print(f"built {output}")
+        print(f"verified frozen rebuild {output}")
 
 
 if __name__ == "__main__":

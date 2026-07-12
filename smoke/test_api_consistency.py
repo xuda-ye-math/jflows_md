@@ -61,7 +61,7 @@ def main() -> None:
     )
     assert integer_literal_samples.dtype == jnp.float32
 
-    target = Molecular_Potential.from_bundle("glycerol_gaff2_am1bcc_obc1_v1")
+    target = Molecular_Potential.from_bundle("glycerol_gaff2_am1bcc_obc1_v2")
     q = target.source().samples(jax.random.key(22), N=1)
     assert q.dtype == jnp.float32
     expect_value_error(lambda: target(jnp.zeros((1, target.dimension - 1))))

@@ -318,8 +318,9 @@ def build_coordinate_spec(
         fraction = chiral_sign * raw_torsions[chiral_index] / math.pi
         source_mean[-1] = math.log(fraction) - math.log1p(-fraction)
     return {
-        "schema_version": 1,
-        "chart": "log-bond_logit-angle_BAT_v1",
+        "schema_version": 2,
+        "chart": "log-bond_logit-angle_quotient_BAT_v2",
+        "jacobian_measure": "rigid_motion_quotient_v1",
         "dimension": 3 * n_atoms - 6,
         "euclidean_dim": euclidean_dim,
         "periodic_dim": periodic_dim,
@@ -478,6 +479,7 @@ def write_bundle(
         "formula": formula,
         "formal_charge": expected_charge,
         "model": dict(model),
+        "coordinate_measure": coordinate_spec["jacobian_measure"],
         "openmm_version": mm.__version__,
         "system_spec": "system.json",
         "coordinate_spec": "coordinates.json",

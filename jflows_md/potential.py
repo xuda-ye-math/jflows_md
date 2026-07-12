@@ -28,7 +28,13 @@ class Molecular_Potential(Potential):
 
     ``q`` has shape ``[batch, d]`` and the returned reduced energy is
 
-    ``beta * E_bundle(x(q)) - log|dx/dq|``.
+    ``beta * E_bundle(x(q)) - log J_config(q)``.
+
+    Current schema-2 targets use the standard Cartesian configurational
+    measure with global translation and rotation factored out. The canonical
+    Cartesian frame returned by :meth:`cartesian` is a representative, not a
+    set of six physical holonomic constraints. An explicitly supplied legacy
+    schema-1 bundle retains its historical gauge-slice measure.
     """
 
     forcefield: Amber_OBC_Force_Field

@@ -1,0 +1,7 @@
+{
+  "change": "canonical gauge-slice measure to rigid-motion quotient",
+  "coordinate_schema_version": 2,
+  "jacobian_measure": "rigid_motion_quotient_v1",
+  "source_bundle": "diethanolamine_neutral_gaff2_am1bcc_obc1_v1",
+  "source_manifest_sha256": "617049504f0f8e4834a986a69c294deb2ee558d197976f22786b19d13a6191e8"
+}

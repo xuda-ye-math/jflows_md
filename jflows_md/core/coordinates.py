@@ -22,7 +22,11 @@ class Internal_Coordinates(eqx.Module):
 
     Bonds use offset/scaled log coordinates, angles use offset/scaled logits
     of ``angle/pi``, and ordinary torsions remain periodic. An optional chiral
-    torsion is replaced by ``tau = sign*pi*sigmoid(eta)``.
+    torsion is replaced by ``tau = sign*pi*sigmoid(eta)``. Current schema-2
+    bundles use the standard Cartesian configurational measure after
+    quotienting rigid translations and rotations. Explicit legacy schema-1
+    bundles remain readable with their historical canonical gauge-slice
+    measure.
     """
 
     order: tuple[int, ...] = eqx.field(static=True)
@@ -31,6 +35,7 @@ class Internal_Coordinates(eqx.Module):
     n_bonds: int = eqx.field(static=True)
     n_angles: int = eqx.field(static=True)
     n_torsions: int = eqx.field(static=True)
+    jacobian_measure: str = eqx.field(static=True)
     chiral_torsion_index: int = eqx.field(static=True)
     chiral_torsion_sign: int = eqx.field(static=True)
     chirality_atoms: tuple[int, int, int, int] = eqx.field(static=True)
@@ -58,6 +63,28 @@ class Internal_Coordinates(eqx.Module):
         self.n_bonds = self.n_atoms - 1
         self.n_angles = self.n_atoms - 2
         self.n_torsions = self.n_atoms - 3
+        schema_version = int(spec.get("schema_version", 1))
+        if schema_version == 1:
+            self.jacobian_measure = str(
+                spec.get("jacobian_measure", "canonical_gauge_slice_v1")
+            )
+        elif schema_version == 2:
+            if "jacobian_measure" not in spec:
+                raise ValueError("CoordinateSpec schema 2 requires jacobian_measure")
+            self.jacobian_measure = str(spec["jacobian_measure"])
+            if self.jacobian_measure != "rigid_motion_quotient_v1":
+                raise ValueError(
+                    "CoordinateSpec schema 2 requires rigid_motion_quotient_v1"
+                )
+        else:
+            raise ValueError(f"unsupported CoordinateSpec schema: {schema_version}")
+        if self.jacobian_measure not in (
+            "canonical_gauge_slice_v1",
+            "rigid_motion_quotient_v1",
+        ):
+            raise ValueError(
+                f"unsupported molecular Jacobian measure: {self.jacobian_measure!r}"
+            )
         self.chiral_torsion_index = int(spec.get("chiral_torsion_index", -1))
         self.chiral_torsion_sign = int(spec.get("chiral_torsion_sign", 0))
         self.chirality_atoms = tuple(map(int, spec.get("chirality_atoms", (-1, -1, -1, -1))))
@@ -124,21 +151,34 @@ class Internal_Coordinates(eqx.Module):
         )
         return bonds, angles, torsions
 
-    def _decode(self, q: Array) -> tuple[Array, Array, Array, Array]:
+    def _decode(
+        self, q: Array
+    ) -> tuple[Array, Array, Array, Array, Array, Array]:
         bond_q = q[:, : self.n_bonds]
         angle_q = q[:, self.n_bonds : self.n_bonds + self.n_angles]
         bond_log = self.bond_offset + self.bond_scale * bond_q
         angle_logit = self.angle_offset + self.angle_scale * angle_q
         bonds = jnp.exp(bond_log)
-        angle_fraction = jax.nn.sigmoid(angle_logit)
+        # Keep the reconstructed Cartesian representative far enough from a
+        # collinear Z-matrix frame for float32 force gradients to remain
+        # defined. The log-volume below still uses the unclipped logits, so
+        # the target continues to diverge toward the true open boundary.
+        epsilon = jnp.sqrt(jnp.finfo(q.dtype).eps)
+        angle_fraction = jnp.clip(
+            jax.nn.sigmoid(angle_logit), epsilon, 1.0 - epsilon
+        )
         angles = jnp.pi * angle_fraction
         periodic = q[:, self.domain.euclidean_dim :]
         if self.chiral_torsion_index < 0:
             torsions = periodic
             chiral_fraction = jnp.empty((q.shape[0], 0), dtype=q.dtype)
+            chiral_eta = jnp.empty((q.shape[0], 0), dtype=q.dtype)
         else:
             eta = q[:, self.n_bonds + self.n_angles]
-            chiral_fraction = jax.nn.sigmoid(eta)[:, None]
+            chiral_eta = eta[:, None]
+            chiral_fraction = jnp.clip(
+                jax.nn.sigmoid(eta), epsilon, 1.0 - epsilon
+            )[:, None]
             pieces = []
             ordinary = 0
             for index in range(self.n_torsions):
@@ -148,53 +188,77 @@ class Internal_Coordinates(eqx.Module):
                     pieces.append(periodic[:, ordinary])
                     ordinary += 1
             torsions = jnp.stack(pieces, axis=-1)
-        return bonds, angles, torsions, chiral_fraction
+        return bonds, angles, torsions, chiral_fraction, angle_logit, chiral_eta
 
-    def _logdet(self, bonds: Array, angles: Array, chiral_fraction: Array) -> Array:
-        bat = jnp.log(bonds[:, 1])
-        bat = bat + jnp.sum(
-            2.0 * jnp.log(bonds[:, 2:]) + jnp.log(jnp.sin(angles[:, 1:])), axis=-1
-        )
+    def _logdet(self, bonds: Array, angle_logit: Array, chiral_eta: Array) -> Array:
+        # sin(theta) is symmetric about pi/2. Evaluating it through the smaller
+        # boundary distance avoids float32 sigmoid saturation producing
+        # sin(pi) < 0 and hence NaNs at the open chart boundary.
+        boundary_angle = jnp.pi * jax.nn.sigmoid(-jnp.abs(angle_logit))
+        log_sin = jnp.log(jnp.sin(boundary_angle))
+        if self.jacobian_measure == "rigid_motion_quotient_v1":
+            # Standard Z-matrix volume element after factoring the six rigid
+            # degrees of freedom: prod_i r_i^2 prod_j sin(theta_j).
+            bat = jnp.sum(2.0 * jnp.log(bonds), axis=-1)
+            bat = bat + jnp.sum(log_sin, axis=-1)
+        else:
+            # Legacy schema-1 measure induced on the canonical gauge slice.
+            # It remains readable for explicit old bundles but is not used by
+            # the current physical-target bundles.
+            bat = jnp.log(bonds[:, 1])
+            bat = bat + jnp.sum(
+                2.0 * jnp.log(bonds[:, 2:])
+                + log_sin[:, 1:],
+                axis=-1,
+            )
         chart = jnp.sum(jnp.log(self.bond_scale) + jnp.log(bonds), axis=-1)
-        angle_fraction = angles / jnp.pi
         chart = chart + jnp.sum(
             jnp.log(self.angle_scale)
             + jnp.log(jnp.pi)
-            + jnp.log(angle_fraction)
-            + jnp.log1p(-angle_fraction),
+            + jax.nn.log_sigmoid(angle_logit)
+            + jax.nn.log_sigmoid(-angle_logit),
             axis=-1,
         )
         if self.chiral_torsion_index >= 0:
-            fraction = chiral_fraction[:, 0]
-            chart = chart + jnp.log(jnp.pi) + jnp.log(fraction) + jnp.log1p(-fraction)
+            eta = chiral_eta[:, 0]
+            chart = (
+                chart
+                + jnp.log(jnp.pi)
+                + jax.nn.log_sigmoid(eta)
+                + jax.nn.log_sigmoid(-eta)
+            )
         return bat + chart
 
     def to_internal(self, x: Array) -> tuple[Array, Array]:
-        """Cartesian ``[batch, atoms, 3]`` to chart coordinates and log|dq/dx|."""
+        """Canonical Cartesian representatives to ``q`` and negative log volume."""
 
         bonds, angles, torsions = self.raw_internal(x)
         bond_q = (jnp.log(bonds) - self.bond_offset) / self.bond_scale
-        fraction = jnp.clip(angles / jnp.pi, 1e-14, 1.0 - 1e-14)
+        epsilon = jnp.sqrt(jnp.finfo(x.dtype).eps)
+        fraction = jnp.clip(angles / jnp.pi, epsilon, 1.0 - epsilon)
         angle_q = (_logit(fraction) - self.angle_offset) / self.angle_scale
+        angle_logit = self.angle_offset + self.angle_scale * angle_q
         if self.chiral_torsion_index < 0:
             q = jnp.concatenate((bond_q, angle_q, torsions), axis=-1)
-            chiral_fraction = jnp.empty((x.shape[0], 0), dtype=x.dtype)
+            chiral_eta = jnp.empty((x.shape[0], 0), dtype=x.dtype)
         else:
             tau = torsions[:, self.chiral_torsion_index]
             chiral_fraction = jnp.clip(
-                self.chiral_torsion_sign * tau / jnp.pi, 1e-14, 1.0 - 1e-14
+                self.chiral_torsion_sign * tau / jnp.pi,
+                epsilon,
+                1.0 - epsilon,
             )
             eta = _logit(chiral_fraction)
             ordinary = torsions[:, self.ordinary_torsion_indices]
             q = jnp.concatenate((bond_q, angle_q, eta[:, None], ordinary), axis=-1)
-            chiral_fraction = chiral_fraction[:, None]
-        logdet = self._logdet(bonds, angles, chiral_fraction)
+            chiral_eta = eta[:, None]
+        logdet = self._logdet(bonds, angle_logit, chiral_eta)
         return q, -logdet
 
     def to_cartesian(self, q: Array) -> tuple[Array, Array]:
-        """Chart coordinates to canonical-frame Cartesian positions and log|dx/dq|."""
+        """Return canonical positions and the configured configurational log volume."""
 
-        bonds, angles, torsions, chiral_fraction = self._decode(q)
+        bonds, angles, torsions, _, angle_logit, chiral_eta = self._decode(q)
         batch = q.shape[0]
         positions: list[Array | None] = [None] * self.n_atoms
         root = self.order
@@ -234,7 +298,7 @@ class Internal_Coordinates(eqx.Module):
             positions[atom] = c + offset
 
         x = jnp.stack(positions, axis=1)
-        return x, self._logdet(bonds, angles, chiral_fraction)
+        return x, self._logdet(bonds, angle_logit, chiral_eta)
 
     def support_mask(self, x: Array) -> Array:
         if self.chirality_sign == 0:

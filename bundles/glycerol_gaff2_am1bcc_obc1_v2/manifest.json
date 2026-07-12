@@ -1,10 +1,12 @@
 {
   "canonical_smiles": "OCC(O)CO",
+  "coordinate_measure": "rigid_motion_quotient_v1",
   "coordinate_spec": "coordinates.json",
   "files": {
-    "coordinates.json": "9f4cafc0debe2bb5539e81c88c1299fb076b6c1a3aa067d456e3779dc0d5ae7f",
+    "coordinates.json": "d56e7e9becc881f8d864a7d65ca9d2bd7f1e1e87db619cbafc5dea9da7f162fc",
     "provenance/antechamber.stdout": "4a4306e585c05a7710ff4005b088a29e307331dfbfb4fc79e55213b4a821dd95",
     "provenance/build_record.json": "206493b02c4ca971c8fb5d920c5c61dd32d9697ed2a424e0abb848dbe58d1f07",
+    "provenance/coordinate_measure_upgrade.json": "9315b2b51eaa0993be69cd308c9085d14ba38cbbfccdd96cdd8716bc1eb2746d",
     "provenance/gaff2.frcmod": "bf922808a85c35c2c11e49229322f906ba4bfc17fa247ee240d7221744a82dd5",
     "provenance/gaff2.mol2": "e99a19caecd9d4cea53db5966eafe06061b8adee4a96b1ae39850b9db3a0405d",
     "provenance/input.mol2": "dd0739d14b11dc41989c8705a55296a5db95040a359fae53888807c286f9c66f",
@@ -41,7 +43,7 @@
     "solute_dielectric": 1.0,
     "solvent_dielectric": 78.5
   },
-  "name": "glycerol_gaff2_am1bcc_obc1_v1",
+  "name": "glycerol_gaff2_am1bcc_obc1_v2",
   "openmm_version": "8.5.2",
   "schema_version": 1,
   "system_spec": "system.json",

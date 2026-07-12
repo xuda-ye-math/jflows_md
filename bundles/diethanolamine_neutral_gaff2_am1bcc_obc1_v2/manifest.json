@@ -1,10 +1,12 @@
 {
   "canonical_smiles": "OCCNCCO",
+  "coordinate_measure": "rigid_motion_quotient_v1",
   "coordinate_spec": "coordinates.json",
   "files": {
-    "coordinates.json": "4840faad654ef87fe57868c908d8b1877f637225d94b1258d2e130b303963ef2",
+    "coordinates.json": "f527e67b990f9de66bef618c6b5c81bbec5764b66a9b7dfccf8e1d908818107b",
     "provenance/antechamber.stdout": "67b0c52f2be3c155a25a6077ab4d4c72e390f60fd7a57f74855243f3cee7ddcd",
     "provenance/build_record.json": "bfe30c4889a8591c6b5a6871f870df64ec5b865166a4729878f2c2ac87ff24cb",
+    "provenance/coordinate_measure_upgrade.json": "3481b044246247ed6a35489812a557396f85cec1782254bfd754790e5054f519",
     "provenance/gaff2.frcmod": "13e01da82a6d29aaeb83db7d2439cb802e5f8854000984cef6ff5118d40f62b0",
     "provenance/gaff2.mol2": "c365189e3c73d0304413a24fddf59db3ec36fcf88f554d0117ecd73297020c37",
     "provenance/input.mol2": "de17576145c9fd7f2cb91b20f1cf53b7f230c39d72fd5e6409549b103db94fd9",
@@ -41,7 +43,7 @@
     "solute_dielectric": 1.0,
     "solvent_dielectric": 78.5
   },
-  "name": "diethanolamine_neutral_gaff2_am1bcc_obc1_v1",
+  "name": "diethanolamine_neutral_gaff2_am1bcc_obc1_v2",
   "openmm_version": "8.5.2",
   "schema_version": 1,
   "system_spec": "system.json",

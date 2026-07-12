@@ -73,7 +73,7 @@
     0.026799364339871515,
     0.02402331070283082
   ],
-  "chart": "log-bond_logit-angle_BAT_v1",
+  "chart": "log-bond_logit-angle_quotient_BAT_v2",
   "chiral_torsion_index": -1,
   "chiral_torsion_sign": 0,
   "chirality_atoms": [
@@ -91,6 +91,7 @@
   ],
   "dimension": 48,
   "euclidean_dim": 33,
+  "jacobian_measure": "rigid_motion_quotient_v1",
   "order": [
     1,
     0,
@@ -221,7 +222,7 @@
       4
     ]
   ],
-  "schema_version": 1,
+  "schema_version": 2,
   "source_mean": [
     0.0,
     0.0,

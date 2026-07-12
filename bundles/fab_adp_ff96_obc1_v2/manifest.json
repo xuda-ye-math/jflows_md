@@ -1,8 +1,10 @@
 {
   "canonical_smiles": "CC(=O)N[C@@H](C)C(=O)NC",
+  "coordinate_measure": "rigid_motion_quotient_v1",
   "coordinate_spec": "coordinates.json",
   "files": {
-    "coordinates.json": "8687a42a8ba46dc38421b9eeff126a68543a0d443d99445e1b69937cf7a9e617",
+    "coordinates.json": "57972d50b9813f6526f9fbd45b319b5f9e6365cc315a25190e762b362fcbe268",
+    "provenance/coordinate_measure_upgrade.json": "f35194d46b894dd2f4fb1598552ca7f5d961ee2d3f439c884fc99d8dfaf50210",
     "reference.pdb": "d8272d84af4a3569189dba7f7a126c24ecccf9556ce22c1441ffd48432945e88",
     "system.json": "a67f66315ad149ba3385b2d02ef2c57b4a0ab4d45581434bf05e148e7fce072f",
     "system.prmtop": "2ce81216c7e18fd4d354fac44e22ba3843d89e297884bd6389a4cd57c74ecf6e",
@@ -24,7 +26,7 @@
     "solute_dielectric": 1.0,
     "solvent_dielectric": 78.5
   },
-  "name": "fab_adp_ff96_obc1_v1",
+  "name": "fab_adp_ff96_obc1_v2",
   "openmm_version": "8.5.2",
   "schema_version": 1,
   "system_spec": "system.json",

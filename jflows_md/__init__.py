@@ -19,6 +19,7 @@ __all__ = [
     "annealed_importance_sampling",
     "available_bundles",
     "load_mixed_flow_stages",
+    "mixed_flow_metadata",
     "mixed_mala",
     "molecular_boltzmann_forward_KLX_G",
     "potential_space_smc",
@@ -40,6 +41,7 @@ _EXPORTS = {
     ),
     "available_bundles": (".system", "available_bundles"),
     "load_mixed_flow_stages": (".artifacts", "load_mixed_flow_stages"),
+    "mixed_flow_metadata": (".artifacts", "mixed_flow_metadata"),
     "mixed_mala": (".utils", "mixed_mala"),
     "molecular_boltzmann_forward_KLX_G": (
         ".boltzmann",

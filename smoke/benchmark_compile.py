@@ -70,7 +70,7 @@ FLOW_MODELS: tuple[tuple[str, tuple[int, ...], int], ...] = (
 )
 FLOW_DIMENSION = 36
 FLOW_BINS = 8
-GLYCEROL_BUNDLE = "glycerol_gaff2_am1bcc_obc1_v1"
+GLYCEROL_BUNDLE = "glycerol_gaff2_am1bcc_obc1_v2"
 GLYCEROL_EUCLIDEAN = 25
 GLYCEROL_PERIODIC = 11
 MALA_ITERS = 2

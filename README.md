@@ -38,7 +38,7 @@ import jax
 
 from jflows_md import Mixed_NSF, Molecular_Potential
 
-target = Molecular_Potential.from_bundle("fab_adp_ff96_obc1_v1")
+target = Molecular_Potential.from_bundle("fab_adp_ff96_obc1_v2")
 source = target.source()
 q = source.samples(jax.random.key(0), 32)
 
@@ -57,12 +57,14 @@ flow = Mixed_NSF(
 The pulled-back reduced potential is
 
 ```text
-U(q) = beta E_bundle(x(q)) - log |det(dx/dq)|.
+U(q) = beta E_bundle(x(q)) - log J_config(q).
 ```
 
 It contains the complete Amber/OBC energy and the Cartesian-to-internal
-Jacobian. It contains neither a sharpened surrogate nor clipped evaluation
-energies.
+Jacobian for the standard configurational measure after quotienting global
+translation and rotation. The canonical Cartesian frame is only a
+representative; it is not a six-constraint gauge-slice ensemble. The target
+contains neither a sharpened surrogate nor clipped evaluation energies.
 
 ## Package layout
 
@@ -73,9 +75,9 @@ jflows_md/
 ├── pyproject.toml
 ├── bundles/
 │   ├── build_molecular_bundles.py
-│   ├── fab_adp_ff96_obc1_v1/
-│   ├── glycerol_gaff2_am1bcc_obc1_v1/
-│   └── diethanolamine_neutral_gaff2_am1bcc_obc1_v1/
+│   ├── fab_adp_ff96_obc1_v2/
+│   ├── glycerol_gaff2_am1bcc_obc1_v2/
+│   └── diethanolamine_neutral_gaff2_am1bcc_obc1_v2/
 ├── jflows_md/
 │   ├── artifacts.py
 │   ├── boltzmann.py
@@ -105,8 +107,9 @@ The supported project environment separates the dependency stacks:
   recommends pip for NVIDIA CUDA wheels.
 
 The [OpenMM installation guide](https://docs.openmm.org/development/userguide/application/01_getting_started.html)
-also documents pip packages; using conda-forge here is a project policy, not
-an upstream limitation. Create the dependency environment first:
+also documents pip packages with CUDA support. That route requires more
+involved CUDA/runtime setup and is not recommended here; this project uses
+conda-forge for OpenMM and ParmEd. Create the dependency environment first:
 
 ```bash
 conda create -n jflows -c conda-forge python=3.11 pip openmm parmed
@@ -153,7 +156,8 @@ The public modules mirror the organization of `jflows`:
 - `jflows_md.system`: `Molecular_Bundle`, `available_bundles`
 - `jflows_md.train`: `train_molecular_forward_KLX_G`
 - `jflows_md.boltzmann`: `molecular_boltzmann_forward_KLX_G`
-- `jflows_md.artifacts`: source hashing and verified stage loading
+- `jflows_md.artifacts`: exact flow-architecture metadata, source hashing, and
+  verified stage loading
 - `jflows_md.utils`: mixed MALA, potential-space SMC, and G-native AIS
 
 Frequently used objects are lazily exposed directly from `jflows_md`. User
@@ -172,11 +176,18 @@ a deliberately biased, score-free target surrogate rather than exact AIS/SMC.
 
 ## Frozen molecular targets
 
+The built-in registry contains only quotient-measure v2 targets. The earlier
+v1 names used a canonical gauge-slice measure and are retired rather than
+silently reinterpreted. The coordinate reader can still open an explicit v1
+bundle for forensic reproducibility. Likewise, schema-1 flow artifacts require
+an explicit target from their original bundle/source revision; automatic
+built-in target discovery is a schema-2 contract.
+
 | Bundle | Physical model | Mixed coordinate domain |
 |---|---|---|
-| `fab_adp_ff96_obc1_v1` | FAB-compatible Amber ff96/OBC1, L-ADP only | R^42 x T^18 (60D) |
-| `glycerol_gaff2_am1bcc_obc1_v1` | GAFF2/AM1-BCC/OBC1, neutral | R^25 x T^11 (36D) |
-| `diethanolamine_neutral_gaff2_am1bcc_obc1_v1` | GAFF2/AM1-BCC/OBC1, explicitly neutral | R^33 x T^15 (48D) |
+| `fab_adp_ff96_obc1_v2` | FAB-compatible Amber ff96/OBC1, L-ADP only | R^42 x T^18 (60D) |
+| `glycerol_gaff2_am1bcc_obc1_v2` | GAFF2/AM1-BCC/OBC1, neutral | R^25 x T^11 (36D) |
+| `diethanolamine_neutral_gaff2_am1bcc_obc1_v2` | GAFF2/AM1-BCC/OBC1, explicitly neutral | R^33 x T^15 (48D) |
 
 Every target uses 300 K, mbondi2 radii, ACE nonpolar solvation, solvent and
 solute dielectric constants 78.5 and 1.0, zero salt, `NoCutoff`, and no
@@ -200,15 +211,18 @@ execution, MALA/SMC/AIS, artifact loading, chunking, and public `jflows`
 compatibility. It does not launch production molecular training. See
 [`smoke/README.md`](smoke/README.md) for the opt-in compilation benchmark.
 
-Rebuild bundles only when their versioned physical definition changes:
+Reproduce and verify the frozen bundles in their matching toolchain with:
 
 ```bash
 python bundles/build_molecular_bundles.py
 ```
 
 The builder uses immutable seed artifacts already stored in each bundle and
-requires OpenMM, ParmEd, and AmberTools. After rebuilding, review every
-manifest, provenance record, validation result, and hash before committing.
+requires OpenMM, ParmEd, and AmberTools. It builds temporary candidates and
+accepts only exact matches to the pinned manifests; it does not overwrite the
+checked-in targets. Any seed, toolchain, Hamiltonian, or validation change
+requires a new bundle version and an explicit review of its provenance and
+hashes.
 
 ## License
 
