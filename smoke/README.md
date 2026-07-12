@@ -3,15 +3,11 @@
 Run the complete pure-JAX suite from the repository root:
 
 ```bash
-conda activate jflows && \
-XLA_PYTHON_CLIENT_PREALLOCATE=false \
-  PYTHONPATH=/mnt/projects/jflows:/mnt/projects/jflows_md \
-  python smoke/run_all.py
+XLA_PYTHON_CLIENT_PREALLOCATE=false python smoke/run_all.py
 ```
 
-Both local packages remain uninstalled. Every command must expose the sibling
-`jflows` and current `jflows_md` checkouts through the two-root `PYTHONPATH`
-shown above.
+This assumes the editable `jflows` and `jflows_md` installations described in
+the root README.
 
 The tests verify bundle hashes and metadata, pure-JAX energies and forces
 against stored OpenMM Reference results for all three molecules, BAT/chart
@@ -34,9 +30,7 @@ not launch a molecular training run.
 Rebuild the bundles only when their versioned model definition changes:
 
 ```bash
-conda activate jflows && \
-PYTHONPATH=/mnt/projects/jflows:/mnt/projects/jflows_md \
-  python bundles/build_molecular_bundles.py
+python bundles/build_molecular_bundles.py
 ```
 
 ## Opt-in compilation benchmark
@@ -66,17 +60,13 @@ molecular training or scaled run is launched.
 Start with one bounded cell per workload:
 
 ```bash
-conda activate jflows && \
-PYTHONPATH=/mnt/projects/jflows:/mnt/projects/jflows_md \
-  python smoke/benchmark_compile.py --quick
+python smoke/benchmark_compile.py --quick
 ```
 
 Run the full bounded grid only when wanted:
 
 ```bash
-conda activate jflows && \
-PYTHONPATH=/mnt/projects/jflows:/mnt/projects/jflows_md \
-  python smoke/benchmark_compile.py --timeout 480 --warm-repeats 10
+python smoke/benchmark_compile.py --timeout 480 --warm-repeats 10
 ```
 
 Each cell runs in a fresh subprocess with a fresh JAX persistent-cache

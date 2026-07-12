@@ -130,24 +130,17 @@ pip install -e "$HOME/src/jflows"
 pip install -e "$HOME/src/jflows_md"
 ```
 
-### Local project runtime
-
-Those editable installs are a convenience for external users, not the project
-workstation. Local runs keep both packages uninstalled and expose both roots
-explicitly through `PYTHONPATH`. Local edits then take effect on the next
-Python process while the environment remains package-free:
+Verify that imports resolve to the editable checkouts:
 
 ```bash
-conda activate jflows && \
-PYTHONPATH=/mnt/projects/jflows:/mnt/projects/jflows_md python -c \
+python -c \
   "from pathlib import Path; import jflows, jflows_md; print(Path(jflows.__file__).resolve()); print(Path(jflows_md.__file__).resolve())"
 ```
 
-Run molecular programs with the same two-root search path:
+Molecular programs then use ordinary Python imports:
 
 ```bash
-conda activate jflows && \
-PYTHONPATH=/mnt/projects/jflows:/mnt/projects/jflows_md python molecular_driver.py
+python molecular_driver.py
 ```
 
 ## Public API
@@ -198,10 +191,7 @@ Run the accelerator-backed smoke suite from the repository root with both live
 source trees visible:
 
 ```bash
-conda activate jflows && \
-XLA_PYTHON_CLIENT_PREALLOCATE=false \
-  PYTHONPATH=/mnt/projects/jflows:/mnt/projects/jflows_md \
-  python smoke/run_all.py
+XLA_PYTHON_CLIENT_PREALLOCATE=false python smoke/run_all.py
 ```
 
 The suite covers bundle integrity, OpenMM energy/force parity, mixed-coordinate
@@ -213,9 +203,7 @@ compatibility. It does not launch production molecular training. See
 Rebuild bundles only when their versioned physical definition changes:
 
 ```bash
-conda activate jflows && \
-PYTHONPATH=/mnt/projects/jflows:/mnt/projects/jflows_md \
-  python bundles/build_molecular_bundles.py
+python bundles/build_molecular_bundles.py
 ```
 
 The builder uses immutable seed artifacts already stored in each bundle and
