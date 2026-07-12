@@ -14,9 +14,21 @@ GB_COULOMB = 138.935485
 GB_OFFSET_NM = 0.009
 
 
-def _array(spec: Mapping, name: str, *, integer: bool = False) -> Array:
+def _array(
+    spec: Mapping,
+    name: str,
+    *,
+    integer: bool = False,
+    columns: int | None = None,
+) -> Array:
     dtype = jnp.int32 if integer else None
-    return jnp.asarray(spec[name], dtype=dtype)
+    value = jnp.asarray(spec[name], dtype=dtype)
+    if columns is not None:
+        if value.ndim == 1 and value.shape == (0,):
+            value = value.reshape((0, columns))
+        elif value.ndim != 2 or value.shape[1] != columns:
+            raise ValueError(f"{name} must have shape [N, {columns}], got {value.shape}")
+    return value
 
 
 class Amber_OBC_Force_Field(eqx.Module):
@@ -50,21 +62,23 @@ class Amber_OBC_Force_Field(eqx.Module):
 
     def __init__(self, spec: Mapping):
         self.n_atoms = int(spec["n_atoms"])
-        self.bond_idx = _array(spec, "bond_idx", integer=True)
+        self.bond_idx = _array(spec, "bond_idx", integer=True, columns=2)
         self.bond_length = _array(spec, "bond_length_nm")
         self.bond_k = _array(spec, "bond_k_kj_mol_nm2")
-        self.angle_idx = _array(spec, "angle_idx", integer=True)
+        self.angle_idx = _array(spec, "angle_idx", integer=True, columns=3)
         self.angle_theta = _array(spec, "angle_theta_rad")
         self.angle_k = _array(spec, "angle_k_kj_mol_rad2")
-        self.torsion_idx = _array(spec, "torsion_idx", integer=True)
+        self.torsion_idx = _array(spec, "torsion_idx", integer=True, columns=4)
         self.torsion_periodicity = _array(spec, "torsion_periodicity")
         self.torsion_phase = _array(spec, "torsion_phase_rad")
         self.torsion_k = _array(spec, "torsion_k_kj_mol")
-        self.pair_idx = _array(spec, "pair_idx", integer=True)
+        self.pair_idx = _array(spec, "pair_idx", integer=True, columns=2)
         self.pair_chargeprod = _array(spec, "pair_chargeprod_e2")
         self.pair_sigma = _array(spec, "pair_sigma_nm")
         self.pair_epsilon = _array(spec, "pair_epsilon_kj_mol")
-        self.exception_idx = _array(spec, "exception_idx", integer=True)
+        self.exception_idx = _array(
+            spec, "exception_idx", integer=True, columns=2
+        )
         self.exception_chargeprod = _array(spec, "exception_chargeprod_e2")
         self.exception_sigma = _array(spec, "exception_sigma_nm")
         self.exception_epsilon = _array(spec, "exception_epsilon_kj_mol")

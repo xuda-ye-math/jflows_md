@@ -18,6 +18,7 @@ import numpy as np  # noqa: E402
 from jflows.potential import Potential  # noqa: E402
 from jflows_md import Molecular_Potential  # noqa: E402
 from jflows_md.core.coordinates import Internal_Coordinates  # noqa: E402
+from jflows_md.core.forcefield import Amber_OBC_Force_Field  # noqa: E402
 from jflows_md.core.validation import compare_stored_openmm  # noqa: E402
 from jflows_md.system import Molecular_Bundle  # noqa: E402
 
@@ -156,6 +157,74 @@ def check_regularized_potential() -> None:
     print("PASS shift-invariant molecular energy regularization")
 
 
+def check_empty_force_interactions() -> None:
+    """Small molecules may legitimately omit one or more force families."""
+
+    bundle = Molecular_Bundle.load("glycerol_gaff2_am1bcc_obc1")
+    spec = dict(bundle.system)
+    for index_name, value_names in (
+        ("bond_idx", ("bond_length_nm", "bond_k_kj_mol_nm2")),
+        ("angle_idx", ("angle_theta_rad", "angle_k_kj_mol_rad2")),
+        (
+            "torsion_idx",
+            ("torsion_periodicity", "torsion_phase_rad", "torsion_k_kj_mol"),
+        ),
+        (
+            "pair_idx",
+            ("pair_chargeprod_e2", "pair_sigma_nm", "pair_epsilon_kj_mol"),
+        ),
+        (
+            "exception_idx",
+            (
+                "exception_chargeprod_e2",
+                "exception_sigma_nm",
+                "exception_epsilon_kj_mol",
+            ),
+        ),
+    ):
+        spec[index_name] = []
+        for name in value_names:
+            spec[name] = []
+    forcefield = Amber_OBC_Force_Field(spec)
+    assert forcefield.bond_idx.shape == (0, 2)
+    assert forcefield.angle_idx.shape == (0, 3)
+    assert forcefield.torsion_idx.shape == (0, 4)
+    assert forcefield.pair_idx.shape == (0, 2)
+    assert forcefield.exception_idx.shape == (0, 2)
+    terms = forcefield.energy_terms(jnp.asarray(bundle.validation["frames_nm"][:1]))
+    for name in ("bond", "angle", "torsion", "nonbonded"):
+        np.testing.assert_array_equal(terms[name], jnp.zeros((1,)))
+    assert bool(jnp.isfinite(terms["gb"]).all() & jnp.isfinite(terms["total"]).all())
+    frame = jnp.asarray(bundle.validation["frames_nm"][0])
+    empty_gradient = jax.grad(
+        lambda value: sum(
+            forcefield.energy_terms(value[None])[name][0]
+            for name in ("bond", "angle", "torsion", "nonbonded")
+        )
+    )(frame)
+    np.testing.assert_array_equal(empty_gradient, jnp.zeros_like(frame))
+    assert bool(jnp.isfinite(empty_gradient).all())
+
+    malformed = (
+        ("bond_idx", [0, 1]),
+        ("bond_idx", [[0, 1, 2, 3]]),
+        ("angle_idx", [[[0, 1, 2]]]),
+        ("torsion_idx", [[0, 1, 2]]),
+        ("pair_idx", [[0, 1, 2]]),
+        ("exception_idx", [[0, 1, 2]]),
+    )
+    for name, value in malformed:
+        bad = dict(bundle.system)
+        bad[name] = value
+        try:
+            Amber_OBC_Force_Field(bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"malformed {name} shape was accepted: {value}")
+    print("PASS empty molecular force-interaction families")
+
+
 def main() -> None:
     print(f"JAX {jax.__version__} backend={jax.default_backend()}")
     for name, (dimension, euclidean, periodic) in EXPECTED.items():
@@ -207,6 +276,7 @@ def main() -> None:
     )
     print("PASS rigid-motion-quotient BAT Jacobian")
     check_regularized_potential()
+    check_empty_force_interactions()
 
 
 if __name__ == "__main__":

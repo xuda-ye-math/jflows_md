@@ -260,6 +260,12 @@ algebra supplied by that dependency. Artifacts should record both repository
 commits because earlier 0.1.x training histories and controller metadata are
 not interchangeable with this release.
 
+Version 0.2.1 additionally canonicalizes a legitimately empty molecular
+interaction index list to its typed shape (`(0,2)`, `(0,3)`, or `(0,4)`). This
+allows very small molecules with no proper torsion or nonbonded-pair term while
+strictly rejecting malformed nonempty index ranks and widths. Existing
+well-formed nonempty force-field arrays and arithmetic are unchanged.
+
 ## Frozen molecular targets
 
 The built-in registry contains only quotient-measure coordinate-schema-2
