@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jflows-md"
+version = "0.1.0"
+description = "Mixed-domain molecular potentials, flows, and samplers for jflows."
+readme = "README.md"
+authors = [{ name = "Xuda", email = "abneryepku@gmail.com" }]
+license = { text = "MIT" }
+requires-python = ">=3.11"
+keywords = [
+    "normalizing-flows",
+    "boltzmann-generator",
+    "molecular-dynamics",
+    "jax",
+    "openmm",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Chemistry",
+]
+dependencies = [
+    "jflows>=0.1.0",
+    "jax>=0.10.0",
+    "equinox>=0.13.0",
+    "numpy>=2.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/xuda-ye-math/jflows_md"
+Repository = "https://github.com/xuda-ye-math/jflows_md"
+
+[tool.setuptools.packages.find]
+include = ["jflows_md*"]

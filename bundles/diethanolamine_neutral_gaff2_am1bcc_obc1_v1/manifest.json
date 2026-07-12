@@ -1,0 +1,51 @@
+{
+  "canonical_smiles": "OCCNCCO",
+  "coordinate_spec": "coordinates.json",
+  "files": {
+    "coordinates.json": "4840faad654ef87fe57868c908d8b1877f637225d94b1258d2e130b303963ef2",
+    "provenance/antechamber.stdout": "67b0c52f2be3c155a25a6077ab4d4c72e390f60fd7a57f74855243f3cee7ddcd",
+    "provenance/build_record.json": "bfe30c4889a8591c6b5a6871f870df64ec5b865166a4729878f2c2ac87ff24cb",
+    "provenance/gaff2.frcmod": "13e01da82a6d29aaeb83db7d2439cb802e5f8854000984cef6ff5118d40f62b0",
+    "provenance/gaff2.mol2": "c365189e3c73d0304413a24fddf59db3ec36fcf88f554d0117ecd73297020c37",
+    "provenance/input.mol2": "de17576145c9fd7f2cb91b20f1cf53b7f230c39d72fd5e6409549b103db94fd9",
+    "provenance/leap.in": "1dce3c490775b17f330b7a393a6d1840ccaaec8d04c6a8dcbd82a242b9363fe8",
+    "provenance/leap.transcript": "cefa13c489f47332855f468d0e379a685d398c5e8e3390f78d8fc1c83dfe8802",
+    "provenance/parmchk2.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "provenance/sqm.in": "0e3ace2ea4268e1b3ef2118ae3d458e185db7066cbe883f39793a67f727fa1cb",
+    "provenance/sqm.transcript": "24549632943e077124ad4ac38f00828118b990590631e98f2f6d6806869e33b7",
+    "provenance/tleap.stdout": "27a9206eb9e098b2e119a11457b9a7854723d2d696fc072d5ed2489829ee0cd1",
+    "reference.pdb": "bb02069cc7873c4f1e71ad07ef46e3f3040a25d2804a4f5d4872415142dd8387",
+    "system.json": "972d78eee3da935b2c806cfb8d84c86106126e4e47334e833e3fbfad08db60b6",
+    "system.prmtop": "99877a06c28f830b5dbff55b4301c0597746093af3e8cec980b65a9bb3e37357",
+    "system.rst7": "fd3cf6b814f7a3d26b88e20bfcde7fbd1d3ccac8230f230ce7479a7b722aea63",
+    "system.xml": "3c5b3d1b220759906afc8d2ea80b0f4774cb78bd0ef4819f107814d5c509eb28",
+    "validation.json": "3bbe5aed2d2f3a09b8f840aeffefc66aad879c7b1645c88ebe87b7970439d55f"
+  },
+  "formal_charge": 0,
+  "formula": "C4H11NO2",
+  "model": {
+    "amber_data_sha256": {
+      "ATOMTYPE_GFF2.DEF": "7a076ac2e667ab87057befc7a5985be4cead83e01ff5d2d3dab9f1d65bff637e",
+      "BCCPARM.DAT": "05f034901d058ad9331325b6ee3fafa25c75b1ce4f52839fe85032eb92941276",
+      "gaff2.dat": "14ad62c8e532c47e2e400e2ca6ad8052b33bda4c4b9bc6f49b6a528e527512be"
+    },
+    "ambertools_version": "24.8",
+    "charges": "AM1-BCC",
+    "constraints": null,
+    "force_field": "GAFF2",
+    "implicit_solvent": "OBC1 (igb=2)",
+    "nonbonded_method": "NoCutoff",
+    "radii": "mbondi2",
+    "salt_molar": 0.0,
+    "sasa": "ACE",
+    "solute_dielectric": 1.0,
+    "solvent_dielectric": 78.5
+  },
+  "name": "diethanolamine_neutral_gaff2_am1bcc_obc1_v1",
+  "openmm_version": "8.5.2",
+  "schema_version": 1,
+  "system_spec": "system.json",
+  "target": "diethanolamine",
+  "temperature_kelvin": 300.0,
+  "validation_spec": "validation.json"
+}

@@ -1,0 +1,51 @@
+{
+  "canonical_smiles": "OCC(O)CO",
+  "coordinate_spec": "coordinates.json",
+  "files": {
+    "coordinates.json": "9f4cafc0debe2bb5539e81c88c1299fb076b6c1a3aa067d456e3779dc0d5ae7f",
+    "provenance/antechamber.stdout": "4a4306e585c05a7710ff4005b088a29e307331dfbfb4fc79e55213b4a821dd95",
+    "provenance/build_record.json": "206493b02c4ca971c8fb5d920c5c61dd32d9697ed2a424e0abb848dbe58d1f07",
+    "provenance/gaff2.frcmod": "bf922808a85c35c2c11e49229322f906ba4bfc17fa247ee240d7221744a82dd5",
+    "provenance/gaff2.mol2": "e99a19caecd9d4cea53db5966eafe06061b8adee4a96b1ae39850b9db3a0405d",
+    "provenance/input.mol2": "dd0739d14b11dc41989c8705a55296a5db95040a359fae53888807c286f9c66f",
+    "provenance/leap.in": "1dce3c490775b17f330b7a393a6d1840ccaaec8d04c6a8dcbd82a242b9363fe8",
+    "provenance/leap.transcript": "cefa13c489f47332855f468d0e379a685d398c5e8e3390f78d8fc1c83dfe8802",
+    "provenance/parmchk2.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "provenance/sqm.in": "d73c7f91dd1f082cf2bf8231e55ff89de2318642e0ccc6c5c3f59c9c76097e36",
+    "provenance/sqm.transcript": "7aa6ffd014aa47427ff0cbe9795ef18002c23da46e6718651664025271d7d185",
+    "provenance/tleap.stdout": "27a9206eb9e098b2e119a11457b9a7854723d2d696fc072d5ed2489829ee0cd1",
+    "reference.pdb": "30b304c8fd9d6aa6be4b6b8e35e088e5daf60f856f159ef445460f179bdeffed",
+    "system.json": "251075734d185793e5b57e9bc51bcdbd1a4345b0f882bebae21ff410e53c7375",
+    "system.prmtop": "a92f1471b3030e526ec6f1ad61115b3de9f895b65e346a578c042e83a6a91744",
+    "system.rst7": "8a5341f4de28e1c70f898497cf694c9501db5d8199add54a3717a7e3f8ade624",
+    "system.xml": "76f3c370001a1de77e021625402ebbf0e56f54d0c4841a46d1969a131e4bd570",
+    "validation.json": "939bb5070648faa45f0a0f30f922bceaecdc38e373c027ec0b24d0bb01a7735c"
+  },
+  "formal_charge": 0,
+  "formula": "C3H8O3",
+  "model": {
+    "amber_data_sha256": {
+      "ATOMTYPE_GFF2.DEF": "7a076ac2e667ab87057befc7a5985be4cead83e01ff5d2d3dab9f1d65bff637e",
+      "BCCPARM.DAT": "05f034901d058ad9331325b6ee3fafa25c75b1ce4f52839fe85032eb92941276",
+      "gaff2.dat": "14ad62c8e532c47e2e400e2ca6ad8052b33bda4c4b9bc6f49b6a528e527512be"
+    },
+    "ambertools_version": "24.8",
+    "charges": "AM1-BCC",
+    "constraints": null,
+    "force_field": "GAFF2",
+    "implicit_solvent": "OBC1 (igb=2)",
+    "nonbonded_method": "NoCutoff",
+    "radii": "mbondi2",
+    "salt_molar": 0.0,
+    "sasa": "ACE",
+    "solute_dielectric": 1.0,
+    "solvent_dielectric": 78.5
+  },
+  "name": "glycerol_gaff2_am1bcc_obc1_v1",
+  "openmm_version": "8.5.2",
+  "schema_version": 1,
+  "system_spec": "system.json",
+  "target": "glycerol",
+  "temperature_kelvin": 300.0,
+  "validation_spec": "validation.json"
+}

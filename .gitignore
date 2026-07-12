@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.egg-info/
+*.log
+*.pth
+.pytest_cache/
+.jax_cache/
+smoke/compile_benchmark.csv
