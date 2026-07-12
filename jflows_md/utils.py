@@ -9,7 +9,6 @@ import these utilities rather than maintaining separate sampler modules.
 from __future__ import annotations
 
 import math
-import operator
 
 import equinox as eqx
 import jax
@@ -18,8 +17,9 @@ from jax import Array
 from jax.scipy.special import logsumexp
 
 from jflows.potential import Potential, linear_combination
-from jflows.utils import compute_ESS_log, lbfgs, resample
+from jflows.utils import compute_ESS_log, lbfgs, linear_weights_from_log, resample
 
+from .core.checks import integer, positive_real
 from .core.domain import Mixed_Domain
 
 
@@ -39,28 +39,6 @@ __all__ = [
 _WRAPPED_RELATIVE_TOLERANCE = 1e-12
 
 
-def _integer(name: str, value, minimum: int) -> int:
-    if isinstance(value, bool):
-        raise ValueError(f"{name} must be an integer, not a boolean")
-    try:
-        result = operator.index(value)
-    except TypeError as exc:
-        raise ValueError(f"{name} must be an integer, got {value!r}") from exc
-    if result < minimum:
-        raise ValueError(f"{name} must be at least {minimum}, got {value!r}")
-    return result
-
-
-def _positive_real(name: str, value) -> float:
-    try:
-        result = float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{name} must be a real scalar, got {value!r}") from exc
-    if not math.isfinite(result) or result <= 0:
-        raise ValueError(f"{name} must be positive and finite, got {value!r}")
-    return result
-
-
 def wrapped_normal_relative_error_bound(step: float, images: int) -> float:
     """Certified relative tail bound for the truncated wrapped proposal.
 
@@ -69,8 +47,8 @@ def wrapped_normal_relative_error_bound(step: float, images: int) -> float:
     wrapped-normal sum uniformly over that interval.
     """
 
-    step = _positive_real("step", step)
-    images = _integer("images", images, 1)
+    step = positive_real("step", step)
+    images = integer("images", images, 1)
     variance = 2.0 * step
     first_omitted = images + 1
     exponent = -(
@@ -126,8 +104,8 @@ def mixed_mala_step(
     torus seam.
     """
 
-    step = _positive_real("mixed_mala_step: step", step)
-    images = _integer("mixed_mala_step: images", images, 1)
+    step = positive_real("mixed_mala_step: step", step)
+    images = integer("mixed_mala_step: images", images, 1)
     error_bound = wrapped_normal_relative_error_bound(step, images)
     if error_bound > _WRAPPED_RELATIVE_TOLERANCE:
         raise ValueError(
@@ -175,9 +153,9 @@ def _mixed_mala_chunk(
 ) -> tuple[Array, Array]:
     """Compile one fixed-shape MALA chunk; orchestration stays eager."""
 
-    step = _positive_real("_mixed_mala_chunk: step", step)
-    iters = _integer("_mixed_mala_chunk: iters", iters, 1)
-    images = _integer("_mixed_mala_chunk: images", images, 1)
+    step = positive_real("_mixed_mala_chunk: step", step)
+    iters = integer("_mixed_mala_chunk: iters", iters, 0)
+    images = integer("_mixed_mala_chunk: images", images, 1)
     keys = jax.random.split(key, iters)
 
     def body(state, subkey):
@@ -192,7 +170,7 @@ def _mixed_mala_chunk(
 def _validate_rows_and_chunk(samples: Array, chunk: int) -> int:
     if samples.ndim != 2 or samples.shape[0] < 1:
         raise ValueError(f"samples must have shape [N, d] with N >= 1, got {samples.shape}")
-    chunk = _integer("chunk", chunk, 1)
+    chunk = integer("chunk", chunk, 1)
     if chunk > samples.shape[0]:
         raise ValueError("chunk must lie in [1, sample count]")
     return chunk
@@ -224,9 +202,9 @@ def mixed_mala(
 
     chunk = _validate_rows_and_chunk(samples, chunk)
     domain._validate(samples, "mixed MALA samples")
-    step = _positive_real("mixed_mala: step", step)
-    iters = _integer("mixed_mala: iters", iters, 1)
-    images = _integer("mixed_mala: images", images, 1)
+    step = positive_real("mixed_mala: step", step)
+    iters = integer("mixed_mala: iters", iters, 0)
+    images = integer("mixed_mala: images", images, 1)
     # Fail before the first (potentially expensive) compilation.
     error_bound = wrapped_normal_relative_error_bound(step, images)
     if error_bound > _WRAPPED_RELATIVE_TOLERANCE:
@@ -312,11 +290,11 @@ def mixed_quench_and_temper(
     domain._validate(samples, "mixed quench-and-temper samples")
     if not math.isfinite(melt) or melt < 0:
         raise ValueError("melt must be nonnegative and finite")
-    opt_step = _positive_real("opt_step", opt_step)
-    opt_iters = _integer("opt_iters", opt_iters, 1)
-    mc_step = _positive_real("mc_step", mc_step)
-    mc_iters = _integer("mc_iters", mc_iters, 1)
-    images = _integer("images", images, 1)
+    opt_step = positive_real("opt_step", opt_step)
+    opt_iters = integer("opt_iters", opt_iters, 0)
+    mc_step = positive_real("mc_step", mc_step)
+    mc_iters = integer("mc_iters", mc_iters, 0)
+    images = integer("images", images, 1)
     # Validate the wrapped proposal before compiling either expensive kernel.
     error_bound = wrapped_normal_relative_error_bound(mc_step, images)
     if error_bound > _WRAPPED_RELATIVE_TOLERANCE:
@@ -393,25 +371,8 @@ def _chunked_bridge_log_weights(
 def _linear_weights(log_weight: Array) -> tuple[Array, bool]:
     """Convert log weights safely and report whether the vector is usable."""
 
-    log_weight = jnp.asarray(log_weight)
-    if not jnp.issubdtype(log_weight.dtype, jnp.inexact):
-        log_weight = log_weight.astype(jnp.result_type(float))
-    has_nan = jnp.any(jnp.isnan(log_weight))
-    positive_infinity = jnp.isposinf(log_weight)
-    has_positive_infinity = jnp.any(positive_infinity)
-    finite = jnp.isfinite(log_weight)
-    has_finite = jnp.any(finite)
-    maximum = jnp.max(jnp.where(finite, log_weight, -jnp.inf))
-    regular = jnp.where(finite, jnp.exp(log_weight - maximum), 0.0)
-    weight = jnp.where(
-        has_positive_infinity,
-        positive_infinity.astype(log_weight.dtype),
-        regular,
-    )
-    valid = ~has_nan & (has_positive_infinity | has_finite)
-    weight = jnp.where(valid, weight, jnp.zeros_like(weight))
-    weight = jax.block_until_ready(weight)
-    has_weight = bool(valid & (jnp.sum(weight) > 0))
+    weight = jax.block_until_ready(linear_weights_from_log(log_weight))
+    has_weight = bool(jnp.sum(weight) > 0)
     return (weight if has_weight else jnp.ones_like(weight)), has_weight
 
 
@@ -429,9 +390,9 @@ def _potential_space_schedule(
     chunk: int,
 ) -> tuple[Array, Array, Array]:
     chunk = _validate_rows_and_chunk(samples, chunk)
-    step = _positive_real("SMC step", step)
-    iters = _integer("SMC iters", iters, 1)
-    images = _integer("SMC images", images, 1)
+    step = positive_real("SMC step", step)
+    iters = integer("SMC iters", iters, 0)
+    images = integer("SMC images", images, 1)
     current = samples
     mala_domain = domain if domain is not None else getattr(target, "domain", None)
     if mala_domain is None:
@@ -446,27 +407,24 @@ def _potential_space_schedule(
         ess = compute_ESS_log(log_weight)
         ess = jax.block_until_ready(jnp.where(jnp.isfinite(ess), ess, 0.0))
         ess_values.append(ess)
-        safe_weight, has_weight = _linear_weights(log_weight)
+        safe_weight, _ = _linear_weights(log_weight)
         resample_key, mala_key = jax.random.split(
             jax.random.fold_in(key, level_index)
         )
         bridge = linear_combination([source, target], [1.0 - value, value])
-        if has_weight:
-            current = resample(
-                resample_key, current, safe_weight, N=current.shape[0]
-            )
-            current, acceptance = mixed_mala(
-                mala_key,
-                current,
-                bridge,
-                mala_domain,
-                step=step,
-                iters=iters,
-                images=images,
-                chunk=chunk,
-            )
-        else:
-            acceptance = jnp.zeros((iters,), dtype=current.dtype)
+        current = resample(
+            resample_key, current, safe_weight, N=current.shape[0]
+        )
+        current, acceptance = mixed_mala(
+            mala_key,
+            current,
+            bridge,
+            mala_domain,
+            step=step,
+            iters=iters,
+            images=images,
+            chunk=chunk,
+        )
         acceptance_values.append(acceptance)
         previous_value = value
     return current, jnp.asarray(ess_values), jnp.stack(acceptance_values)
@@ -493,7 +451,7 @@ def sequential_monte_carlo(
     with one physical chunk rather than ``ladder * chunk`` copies.
     """
 
-    ladder = _integer("ladder", ladder, 1)
+    ladder = integer("ladder", ladder, 1)
     levels = tuple(level / ladder for level in range(1, ladder + 1))
     return _potential_space_schedule(
         key,
@@ -554,8 +512,15 @@ def potential_space_smc(
 
 
 @eqx.filter_jit
-def _flow_inverse_chunk(flow, samples: Array) -> Array:
-    return flow.inv(samples)
+def _initial_flow_proposal_chunk(
+    flow,
+    samples: Array,
+    source: Potential,
+    target: Potential,
+) -> tuple[Array, Array]:
+    proposal, inverse_ladj = flow.inv_and_ladj(samples)
+    log_weight = -target(proposal) + source(samples) + inverse_ladj
+    return proposal, log_weight
 
 
 @eqx.filter_jit
@@ -600,11 +565,16 @@ def annealed_importance_sampling(
     images: int = 3,
     domain: Mixed_Domain | None = None,
     chunk: int = 1,
-) -> Array:
+    return_initial_log_weights: bool = False,
+) -> Array | tuple[Array, Array]:
     """Flow-proposal AIS for a molecular inverse flow ``G``.
 
     ``flow`` always acts as ``G`` (target to source), so this companion API has
-    no direction string. Source samples are first pushed by ``G^-1``.
+    no direction string. Source samples are first pushed by ``G^-1``. The
+    original source particles and matching inverse-map Jacobian supply the
+    first correction directly; later levels refresh the latent pre-image after
+    resampling and MALA. This avoids a needless inverse/forward round trip and
+    matches the direct-first proposal semantics of :mod:`jflows`.
     Reweighting follows the nominal geometric path from that pushforward
     proposal toward ``target`` over ``ladder`` levels. Every rejuvenation uses
     mixed MALA at the final target. This keeps MCMC score-free in the flow
@@ -614,12 +584,17 @@ def annealed_importance_sampling(
     same names and meanings as in :func:`jflows.utils.annealed_importance_sampling`
     and :func:`sequential_monte_carlo`. Unlike potential-space SMC, this
     target-rejuvenated training sampler is deliberately biased.
+
+    Set ``return_initial_log_weights=True`` to also return the full, unscaled
+    proposal-to-target log weights evaluated before any annealing correction.
     """
 
-    ladder = _integer("ladder", ladder, 1)
-    iters = _integer("iters", iters, 1)
-    step = _positive_real("step", step)
-    images = _integer("images", images, 1)
+    if not isinstance(return_initial_log_weights, bool):
+        raise TypeError("return_initial_log_weights must be bool")
+    ladder = integer("ladder", ladder, 1)
+    iters = integer("iters", iters, 0)
+    step = positive_real("step", step)
+    images = integer("images", images, 1)
     chunk = _validate_rows_and_chunk(samples, chunk)
     mala_domain = domain
     if mala_domain is None:
@@ -628,32 +603,39 @@ def annealed_importance_sampling(
         raise ValueError("domain is required when neither target nor flow exposes it")
     mala_domain._validate(samples, "AIS source samples")
 
-    pushed = []
+    pushed, initial_parts = [], []
     for part in jnp.array_split(samples, chunk, axis=0):
-        pushed.append(jax.block_until_ready(_flow_inverse_chunk(flow, part)))
-    y = jnp.concatenate(pushed, axis=0)
-    for level in range(1, ladder + 1):
-        log_weight = _chunked_ais_log_weights(
-            y, source, target, flow, 1.0 / ladder, chunk
+        y_part, initial_part = jax.block_until_ready(
+            _initial_flow_proposal_chunk(flow, part, source, target)
         )
-        safe_weight, has_weight = _linear_weights(log_weight)
+        pushed.append(y_part)
+        initial_parts.append(initial_part)
+    y = jnp.concatenate(pushed, axis=0)
+    initial_log_weights = jnp.concatenate(initial_parts, axis=0)
+    for level in range(1, ladder + 1):
+        if level == 1:
+            log_weight = initial_log_weights / ladder
+        else:
+            log_weight = _chunked_ais_log_weights(
+                y, source, target, flow, 1.0 / ladder, chunk
+            )
+        safe_weight, _ = _linear_weights(log_weight)
         resample_key, mala_key = jax.random.split(
             jax.random.fold_in(key, level)
         )
-        if has_weight:
-            y = resample(resample_key, y, safe_weight, N=y.shape[0])
-            y = mixed_mala(
-                mala_key,
-                y,
-                target,
-                mala_domain,
-                step=step,
-                iters=iters,
-                images=images,
-                chunk=chunk,
-            )[0]
-        else:
-            return jnp.full_like(y, jnp.nan)
+        y = resample(resample_key, y, safe_weight, N=y.shape[0])
+        y = mixed_mala(
+            mala_key,
+            y,
+            target,
+            mala_domain,
+            step=step,
+            iters=iters,
+            images=images,
+            chunk=chunk,
+        )[0]
+    if return_initial_log_weights:
+        return y, initial_log_weights
     return y
 
 

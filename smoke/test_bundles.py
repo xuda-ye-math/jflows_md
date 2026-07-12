@@ -159,7 +159,6 @@ def main() -> None:
         "Mixed_Identity",
         "Mixed_NSF",
         "Molecular_Bundle",
-        "Molecular_Monitor",
         "Molecular_Potential",
         "Molecular_Source",
         "annealed_importance_sampling",

@@ -19,7 +19,11 @@ from jflows_md import Mixed_Identity, Molecular_Potential  # noqa: E402
 from jflows_md.core.chirality import signed_volume  # noqa: E402
 from jflows_md.core.domain import Mixed_Domain  # noqa: E402
 from jflows_md.system import Molecular_Bundle  # noqa: E402
-from jflows_md.utils import mixed_mala, sequential_monte_carlo  # noqa: E402
+from jflows_md.utils import (  # noqa: E402
+    annealed_importance_sampling,
+    mixed_mala,
+    sequential_monte_carlo,
+)
 
 
 NAMES = (
@@ -108,6 +112,17 @@ def main() -> None:
     assert bool(jnp.all((result[:, 2] >= -jnp.pi) & (result[:, 2] < jnp.pi)))
     assert bool(jnp.all((acceptance >= 0) & (acceptance <= 1)))
     print(f"PASS mixed MALA: mean_acceptance={float(acceptance.mean()):.3f}")
+    unchanged, empty_acceptance = mixed_mala(
+        jax.random.key(911),
+        initial,
+        target,
+        domain,
+        step=1e-2,
+        iters=0,
+        chunk=2,
+    )
+    assert bool(jnp.array_equal(unchanged, initial))
+    assert empty_acceptance.shape == (0,)
 
     source = Toy_Mixed_Potential(domain, [0.0, 0.0, 0.0])
     target = Toy_Mixed_Potential(domain, [0.4, -0.2, 0.7])
@@ -127,6 +142,32 @@ def main() -> None:
     assert bool(jnp.all((ess > 0) & (ess <= 1)))
     assert bool(jnp.all((particles[:, 2] >= -jnp.pi) & (particles[:, 2] < jnp.pi)))
     print(f"PASS potential-space SMC: min_ESS={float(ess.min()):.3f}")
+
+    invalid_target = potential_from(
+        lambda x: jnp.full((x.shape[0],), jnp.inf, dtype=x.dtype)
+    )
+    invalid_result, invalid_initial_weight = annealed_importance_sampling(
+        jax.random.key(93),
+        initial,
+        source,
+        invalid_target,
+        identity,
+        ladder=2,
+        step=1e-2,
+        iters=0,
+        domain=domain,
+        chunk=2,
+        return_initial_log_weights=True,
+    )
+    assert bool(jnp.isneginf(invalid_initial_weight).all())
+    assert bool(jnp.isfinite(invalid_result).all())
+    assert bool(
+        jnp.all(
+            (invalid_result[:, 2] >= -jnp.pi)
+            & (invalid_result[:, 2] < jnp.pi)
+        )
+    )
+    print("PASS invalid AIS weights use uniform resampling fallback")
 
 
 if __name__ == "__main__":

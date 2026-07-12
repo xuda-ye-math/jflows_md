@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import operator
 
 import equinox as eqx
 import jax
@@ -11,10 +10,15 @@ import jax.numpy as jnp
 from jax import Array
 
 from jflows.potential import linear_combination
-from jflows.utils import compute_ESS_log, resample
+from jflows.utils import (
+    compute_ESS_log,
+    importance_weights_log,
+    linear_weights_from_log,
+    resample,
+)
 
+from .core.checks import integer, nonnegative_real
 from .train import (
-    _MAX_SNAPSHOTS,
     train_molecular_forward_KLX_G,
     train_molecular_forward_KLXX_G,
 )
@@ -37,28 +41,6 @@ _DEFAULTS = {
     "max_stages": 25,
     "max_retry": 8,
 }
-
-
-def _integer(name: str, value, minimum: int = 1) -> int:
-    if isinstance(value, bool):
-        raise ValueError(f"{name} must be an integer, not a boolean")
-    try:
-        result = operator.index(value)
-    except TypeError as exc:
-        raise ValueError(f"{name} must be an integer, got {value!r}") from exc
-    if result < minimum:
-        raise ValueError(f"{name} must be at least {minimum}, got {value!r}")
-    return result
-
-
-def _screen(name: str, value) -> float:
-    try:
-        result = float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{name} must be a real scalar, got {value!r}") from exc
-    if math.isnan(result) or result < 0:
-        raise ValueError(f"{name} must be nonnegative")
-    return result
 
 
 def _bg_parameters(bg_param: dict | None) -> dict:
@@ -104,7 +86,7 @@ def _bg_parameters(bg_param: dict | None) -> dict:
             "arithmetic"
         )
     for name in ("max_stages", "max_retry"):
-        parameters[name] = _integer(name, parameters[name])
+        parameters[name] = integer(name, parameters[name])
     parameters.update(values)
     return parameters
 
@@ -123,24 +105,8 @@ def _ess(log_weight: Array) -> float:
 
 
 def _linear_weights(log_weight: Array) -> Array:
-    log_weight = jnp.asarray(log_weight)
-    if not jnp.issubdtype(log_weight.dtype, jnp.inexact):
-        log_weight = log_weight.astype(jnp.result_type(float))
-    has_nan = jnp.any(jnp.isnan(log_weight))
-    positive_infinity = jnp.isposinf(log_weight)
-    has_positive_infinity = jnp.any(positive_infinity)
-    finite = jnp.isfinite(log_weight)
-    has_finite = jnp.any(finite)
-    maximum = jnp.max(jnp.where(finite, log_weight, -jnp.inf))
-    regular = jnp.where(finite, jnp.exp(log_weight - maximum), 0.0)
-    weight = jnp.where(
-        has_positive_infinity,
-        positive_infinity.astype(log_weight.dtype),
-        regular,
-    )
-    valid = ~has_nan & (has_positive_infinity | has_finite)
-    weight = jnp.where(valid, weight, jnp.zeros_like(weight))
-    return jnp.where(valid & (weight.sum() > 0), weight, jnp.ones_like(weight))
+    weight = linear_weights_from_log(log_weight)
+    return jnp.where(weight.sum() > 0, weight, jnp.ones_like(weight))
 
 
 @eqx.filter_jit
@@ -155,8 +121,7 @@ def _inverse_chunk(flow, samples) -> Array:
 
 @eqx.filter_jit
 def _importance_weight_g_chunk(samples, source, target, flow) -> Array:
-    proposal, inverse_ladj = flow.inv_and_ladj(samples)
-    return -target(proposal) + source(samples) + inverse_ladj
+    return importance_weights_log(samples, source, target, flow, "G")
 
 
 def _chunked_identity_weights(samples, source, target, chunk: int) -> Array:
@@ -215,7 +180,6 @@ def molecular_boltzmann_forward_KLX_G(
     seed: int = 0,
     checkpoint: bool = False,
     lr_warmup: int = 0,
-    selection_steps: tuple[int, ...] = (),
     _objective: str = "klx",
     _coeff_alpha: float = 0.5,
     _coeff_beta: float = 0.5,
@@ -228,30 +192,24 @@ def molecular_boltzmann_forward_KLX_G(
     Candidate bridge coefficients are selected by honest potential-space SMC
     with mixed MALA. Each incremental inverse flow is trained on those SMC
     particles; ``e_clip`` affects only that optimizer loss. Stage selection,
-    importance weights, and MALA always use the unmodified target. With sparse
-    ``selection_steps``, exact identity (step -1), the pre-update warm start
-    (step 0), every requested post-update checkpoint, and the final flow are
-    compared by proposal-side ESS on all validation particles; the best one
-    then faces the unchanged ``tau_ess`` gate. An empty schedule preserves the
-    original final-versus-identity gate. At most 32 snapshots may be requested
-    because storage scales with checkpoint count times model size.
-
-    ``checkpoint`` controls backward-pass rematerialization and is unrelated
-    to ``selection_steps``. MALA adjustment is mandatory in this molecular
-    driver and therefore is not an experimental argument.
+    importance weights, and MALA always use the unmodified target. The final
+    trained flow and exact identity are compared by proposal-side ESS on all
+    validation particles; the better map then faces the unchanged ``tau_ess``
+    gate. ``checkpoint`` controls backward-pass rematerialization. MALA
+    adjustment is mandatory and therefore is not an experimental argument.
     """
 
     if not hasattr(target, "domain") or not hasattr(target, "reference_internal"):
         raise TypeError("the molecular target must expose domain and reference_internal")
     if x_valid.ndim != 2 or x_valid.shape[0] < 1:
         raise ValueError(f"x_valid must have shape [N, d], got {x_valid.shape}")
-    n_pool = _integer("n_pool", n_pool)
-    n_batch = _integer("n_batch", n_batch)
-    steps = _integer("steps", steps)
-    ladder = _integer("ladder", ladder)
-    mc_iters = _integer("mc_iters", mc_iters)
-    chunk = _integer("chunk", chunk)
-    images = _integer("images", images)
+    n_pool = integer("n_pool", n_pool)
+    n_batch = integer("n_batch", n_batch)
+    steps = integer("steps", steps)
+    ladder = integer("ladder", ladder)
+    mc_iters = integer("mc_iters", mc_iters, minimum=0)
+    chunk = integer("chunk", chunk)
+    images = integer("images", images)
     if n_batch > n_pool:
         raise ValueError("n_batch cannot exceed n_pool")
     if chunk > min(n_pool, x_valid.shape[0]):
@@ -260,21 +218,7 @@ def molecular_boltzmann_forward_KLX_G(
         raise ValueError("lr must be positive and finite")
     if not math.isfinite(mc_step) or mc_step <= 0:
         raise ValueError("mc_step must be positive and finite")
-    lr_warmup = _integer("lr_warmup", lr_warmup, minimum=0)
-    if any(
-        not isinstance(value, int)
-        or isinstance(value, bool)
-        or value < 1
-        or value > steps
-        for value in selection_steps
-    ):
-        raise ValueError("selection_steps must contain integers in [1, steps]")
-    if tuple(sorted(set(selection_steps))) != selection_steps:
-        raise ValueError("selection_steps must be strictly increasing")
-    if len(selection_steps) > _MAX_SNAPSHOTS:
-        raise ValueError(
-            f"selection_steps is limited to {_MAX_SNAPSHOTS} sparse checkpoints"
-        )
+    lr_warmup = integer("lr_warmup", lr_warmup, minimum=0)
     if _objective not in ("klx", "klxx"):
         raise ValueError("unknown molecular objective")
     if not math.isfinite(coeff_lambda) or coeff_lambda < 0:
@@ -285,13 +229,11 @@ def molecular_boltzmann_forward_KLX_G(
             for value in (_coeff_alpha, _coeff_beta, _melt)
         ):
             raise ValueError("molecular KLXX coefficients and melt must be nonnegative")
-        if _coeff_alpha + _coeff_beta <= 0:
-            raise ValueError("molecular KLXX mixture weights cannot both be zero")
         if not math.isfinite(_opt_step) or _opt_step <= 0:
             raise ValueError("molecular KLXX QT controls must be positive")
-        _opt_iters = _integer("opt_iters", _opt_iters)
-    e_clip = _screen("e_clip", e_clip)
-    g_clip = _screen("g_clip", g_clip)
+        _opt_iters = integer("opt_iters", _opt_iters, minimum=0)
+    e_clip = nonnegative_real("e_clip", e_clip)
+    g_clip = nonnegative_real("g_clip", g_clip)
     parameters = _bg_parameters(bg_param)
 
     status = monitor.printer if monitor is not None else print
@@ -357,7 +299,7 @@ def molecular_boltzmann_forward_KLX_G(
                 f"min SMC ESS={minimum_smc_ess:.3f} "
                 f"MALA={float(jnp.mean(smc_acceptance)):.3f}"
             )
-            if minimum_smc_ess <= 0.0 or minimum_smc_ess < parameters["tau_smc"]:
+            if minimum_smc_ess < parameters["tau_smc"]:
                 candidate_t = previous_t + parameters["shrink_factor"] * (
                     candidate_t - previous_t
                 )
@@ -401,15 +343,10 @@ def molecular_boltzmann_forward_KLX_G(
                 )
                 smc_pool = jax.block_until_ready(smc_pool)
                 retry_smc_ess = float(jnp.min(smc_ess))
-                if retry_smc_ess < parameters["tau_smc"]:
-                    candidate_t = previous_t + parameters["shrink_factor"] * (
-                        candidate_t - previous_t
-                    )
-                    status(
-                        f"[stage {stage_index}] retry SMC ESS={retry_smc_ess:.3f} "
-                        f"below tau_smc={parameters['tau_smc']:.3f} -> shrink"
-                    )
-                    continue
+                status(
+                    f"[stage {stage_index}] retry SMC ESS={retry_smc_ess:.3f} "
+                    "(diagnostic; final validation ESS controls retry)"
+                )
 
             energy_origin = current(reference)[0]
             trainer_seed = jax.random.key_data(
@@ -467,12 +404,12 @@ def molecular_boltzmann_forward_KLX_G(
                     monitor=monitor,
                     checkpoint=checkpoint,
                     lr_warmup=lr_warmup,
-                    snapshot_steps=selection_steps,
                     seed=trainer_seed,
                 )
             else:
                 training_result = train_molecular_forward_KLX_G(
                     smc_pool,
+                    selection_pool,
                     previous,
                     current,
                     attempt_flow,
@@ -486,129 +423,57 @@ def molecular_boltzmann_forward_KLX_G(
                     monitor=monitor,
                     checkpoint=checkpoint,
                     lr_warmup=lr_warmup,
-                    snapshot_steps=selection_steps,
                     seed=trainer_seed,
                 )
-            if selection_steps:
-                (
-                    candidate,
-                    ratio_history,
-                    kept_history,
-                    update_history,
-                    snapshot_flows,
-                ) = training_result
-            else:
-                candidate, ratio_history, kept_history, update_history = (
-                    training_result
-                )
-                snapshot_flows = ()
+            candidate, ess_history, kept_history, update_history = training_result
             candidate = jax.block_until_ready(candidate)
             if not bool(jnp.any(update_history)):
-                candidate_t = previous_t + parameters["shrink_factor"] * (
-                    candidate_t - previous_t
+                status(
+                    f"[stage {stage_index}] zero optimizer updates; "
+                    "continuing to final validation ESS"
                 )
-                status(f"[stage {stage_index}] zero optimizer updates -> shrink")
-                continue
-            candidate_is_finite = _flow_is_finite(candidate)
-            if not candidate_is_finite and not selection_steps:
-                candidate_t = previous_t + parameters["shrink_factor"] * (
-                    candidate_t - previous_t
+            if not _flow_is_finite(candidate):
+                status(
+                    f"[stage {stage_index}] nonfinite final trained flow; "
+                    "excluding it from the final validation ESS comparison"
                 )
-                status(f"[stage {stage_index}] nonfinite flow rejected -> shrink")
-                continue
             identity_log_weight = _chunked_identity_weights(
                 particles, previous, current, chunk
             )
             identity_ess = _ess(identity_log_weight)
-            checkpoint_flows = [(-1, "identity", identity_flow)]
-            if selection_steps:
-                checkpoint_flows.append((0, "warm_start", attempt_flow))
-            checkpoint_flows.extend(
-                (
-                    step_value,
-                    "final" if step_value == steps else "checkpoint",
-                    checkpoint_flow,
+            candidate_finite = _flow_is_finite(candidate)
+            if candidate_finite:
+                trained_log_weight = _importance_weights_g(
+                    particles, previous, current, candidate, chunk
                 )
-                for step_value, checkpoint_flow in zip(
-                    selection_steps, snapshot_flows
+                trained_ess = _ess(trained_log_weight)
+            else:
+                trained_log_weight = jnp.full_like(
+                    identity_log_weight, -jnp.inf
                 )
-            )
-            if not selection_steps or selection_steps[-1] != steps:
-                checkpoint_flows.append((steps, "final", candidate))
-
-            checkpoint_records = []
-            for step_value, label, checkpoint_flow in checkpoint_flows:
-                if label == "identity":
-                    checkpoint_log_weight = identity_log_weight
-                elif not _flow_is_finite(checkpoint_flow):
-                    checkpoint_log_weight = jnp.full_like(
-                        identity_log_weight, -jnp.inf
-                    )
-                else:
-                    checkpoint_log_weight = _importance_weights_g(
-                        particles,
-                        previous,
-                        current,
-                        checkpoint_flow,
-                        chunk,
-                    )
-                checkpoint_ess = _ess(checkpoint_log_weight)
-                status(
-                    f"[stage {stage_index}] [attempt {attempt}] "
-                    f"checkpoint {label} step={step_value} "
-                    f"proposal ESS[N={particles.shape[0]}]={checkpoint_ess:.6f}"
-                )
-                checkpoint_records.append(
-                    {
-                        "step": step_value,
-                        "label": label,
-                        "ess": checkpoint_ess,
-                        "flow": checkpoint_flow,
-                        "log_weight": checkpoint_log_weight,
-                    }
-                )
-
-            # On an exact ESS tie, retain the original behavior: a trained
-            # flow wins over identity, and the later trained checkpoint wins.
-            selected_record = max(
-                checkpoint_records,
-                key=lambda record: (
-                    record["ess"],
-                    record["step"] > 0,
-                    record["step"],
-                ),
-            )
-            trained_record = max(
-                (
-                    record
-                    for record in checkpoint_records
-                    if record["label"] != "identity"
-                ),
-                key=lambda record: (record["ess"], record["step"]),
-            )
-            final_record = next(
-                record
-                for record in reversed(checkpoint_records)
-                if record["label"] == "final"
-            )
-            selected_step = selected_record["step"]
-            selected_label = selected_record["label"]
-            selected_flow = selected_record["flow"]
-            selected_log_weight = selected_record["log_weight"]
-            stage_ess = selected_record["ess"]
-            trained_ess = trained_record["ess"]
-            final_ess = final_record["ess"]
+                trained_ess = 0.0
+            # Preserve generic jflows tie semantics: the trained endpoint wins
+            # an exact ESS tie with identity.
+            if candidate_finite and trained_ess >= identity_ess:
+                selected_label = "trained"
+                selected_flow = candidate
+                selected_log_weight = trained_log_weight
+                stage_ess = trained_ess
+            else:
+                selected_label = "identity"
+                selected_flow = identity_flow
+                selected_log_weight = identity_log_weight
+                stage_ess = identity_ess
             improvement = stage_ess - identity_ess
             status(
                 f"[stage {stage_index}] t={candidate_t:.4f} "
                 f"validation ESS[N={particles.shape[0]}]="
                 f"{stage_ess:.3f} (selected={selected_label}, "
-                f"step={selected_step}, "
-                f"trained_best={trained_ess:.3f}, final={final_ess:.3f}, "
+                f"trained={trained_ess:.3f}, "
                 f"identity={identity_ess:.3f}, "
                 f"kept={float(jnp.mean(kept_history)):.3f})"
             )
-            if stage_ess <= 0.0 or stage_ess < parameters["tau_ess"]:
+            if stage_ess < parameters["tau_ess"]:
                 candidate_t = previous_t + parameters["shrink_factor"] * (
                     candidate_t - previous_t
                 )
@@ -645,26 +510,11 @@ def molecular_boltzmann_forward_KLX_G(
                     "t": candidate_t,
                     "ess": stage_ess,
                     "trained_ess": trained_ess,
-                    "final_ess": final_ess,
                     "identity_ess": identity_ess,
-                    "selected": (
-                        "identity" if selected_label == "identity" else "trained"
-                    ),
-                    "selected_checkpoint": selected_label,
-                    "selected_step": selected_step,
-                    "checkpoint_steps": jnp.asarray(
-                        [record["step"] for record in checkpoint_records]
-                    ),
-                    "checkpoint_ess": jnp.asarray(
-                        [record["ess"] for record in checkpoint_records]
-                    ),
-                    "checkpoint_labels": tuple(
-                        record["label"] for record in checkpoint_records
-                    ),
+                    "selected": selected_label,
                     "ess_samples": particles.shape[0],
                     "flow": selected_flow,
-                    "ratio_history": ratio_history,
-                    "ess_history": ratio_history,
+                    "ess_history": ess_history,
                     "kept_history": kept_history,
                     "update_history": update_history,
                     "imp_history": improvement,
@@ -681,7 +531,7 @@ def molecular_boltzmann_forward_KLX_G(
             accepted = True
             status(
                 f"[stage {stage_index}] ACCEPTED t={candidate_t:.4f} "
-                f"checkpoint={selected_label} step={selected_step} "
+                f"selected={selected_label} "
                 f"post-MALA={float(jnp.mean(mala_acceptance)):.3f}"
             )
             break
@@ -729,15 +579,11 @@ def molecular_boltzmann_forward_KLXX_G(
     seed: int = 0,
     checkpoint: bool = False,
     lr_warmup: int = 0,
-    selection_steps: tuple[int, ...] = (),
 ) -> tuple[Array, list[dict]]:
     """Adaptive mixed-domain ``KL + X_mu + X_mix`` generator.
 
-    Sparse ``selection_steps`` request post-update flow snapshots. The stage
-    gate compares exact identity (reported at step -1), the pre-update warm
-    start (step 0), requested snapshots, and the final flow on full validation
-    proposal ESS. Stage records expose the selected label/step and all tested
-    checkpoint labels, steps, and ESS values. ``checkpoint`` is the separate
+    The stage gate compares only the final trained flow and exact identity on
+    full-validation proposal ESS. ``checkpoint`` is the independent
     backward-pass rematerialization switch.
     """
 
@@ -763,7 +609,6 @@ def molecular_boltzmann_forward_KLXX_G(
         seed=seed,
         checkpoint=checkpoint,
         lr_warmup=lr_warmup,
-        selection_steps=selection_steps,
         _objective="klxx",
         _coeff_alpha=coeff_alpha,
         _coeff_beta=coeff_beta,

@@ -14,7 +14,6 @@ __all__ = [
     "Mixed_Identity",
     "Mixed_NSF",
     "Molecular_Bundle",
-    "Molecular_Monitor",
     "Molecular_Potential",
     "Molecular_Source",
     "annealed_importance_sampling",
@@ -37,7 +36,6 @@ _EXPORTS = {
     "Mixed_Identity": (".flow", "Mixed_Identity"),
     "Mixed_NSF": (".flow", "Mixed_NSF"),
     "Molecular_Bundle": (".system", "Molecular_Bundle"),
-    "Molecular_Monitor": (".train", "Molecular_Monitor"),
     "Molecular_Potential": (".potential", "Molecular_Potential"),
     "Molecular_Source": (".source", "Molecular_Source"),
     "annealed_importance_sampling": (

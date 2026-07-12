@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import operator
 
 import equinox as eqx
 import jax
@@ -13,31 +12,12 @@ from jax import Array
 
 from jflows.flow import ComposedTransform, Flow
 
+from .core.checks import integer
 from .core.domain import Mixed_Domain
 from .core.flow import Mixed_Domain_Wrap, Mixed_Spline_Coupling, zero_coupling
 
 
 __all__ = ["Mixed_Identity", "Mixed_NSF"]
-
-
-def _positive_int(name: str, value, minimum: int = 1) -> int:
-    if isinstance(value, bool):
-        raise ValueError(f"{name} must be an integer, not a boolean")
-    try:
-        result = operator.index(value)
-    except TypeError as exc:
-        raise ValueError(f"{name} must be an integer, got {value!r}") from exc
-    if result < minimum:
-        raise ValueError(f"{name} must be at least {minimum}, got {value!r}")
-    return result
-
-
-def conditioner_features(x: Array, domain: Mixed_Domain) -> Array:
-    """Raw Euclidean values plus cosine/sine embeddings of torsions."""
-
-    euclidean = x[..., : domain.euclidean_dim]
-    periodic = x[..., domain.euclidean_dim :]
-    return jnp.concatenate((euclidean, jnp.cos(periodic), jnp.sin(periodic)), axis=-1)
 
 
 class Mixed_Identity(Flow):
@@ -92,8 +72,8 @@ class Mixed_NSF(Flow):
             raise TypeError("domain must be a Mixed_Domain")
         if domain.dimension < 2:
             raise ValueError("Mixed_NSF requires a domain of dimension at least two")
-        bins = _positive_int("bins", bins, minimum=2)
-        transforms = _positive_int("transforms", transforms, minimum=2)
+        bins = integer("bins", bins, minimum=2)
+        transforms = integer("transforms", transforms, minimum=2)
         if not math.isfinite(float(euclidean_bound)) or euclidean_bound <= 0:
             raise ValueError("euclidean_bound must be positive and finite")
         if not math.isfinite(float(slope)) or not 0 < slope < 1:
@@ -101,7 +81,7 @@ class Mixed_NSF(Flow):
         if not hidden_features:
             raise ValueError("hidden_features must be nonempty")
         hidden_features = tuple(
-            _positive_int("hidden feature width", width)
+            integer("hidden feature width", width)
             for width in hidden_features
         )
         if len(set(hidden_features)) != 1:

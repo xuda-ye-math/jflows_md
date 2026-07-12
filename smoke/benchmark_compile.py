@@ -560,6 +560,7 @@ def _build_operation(cell: Cell):
             samples = source.samples(key, N=cell.data_samples)
             return train_molecular_forward_KLX_G(
                 samples,
+                samples,
                 source,
                 target,
                 candidate,

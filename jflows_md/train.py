@@ -3,67 +3,26 @@
 from __future__ import annotations
 
 import math
-import operator
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax import Array, lax
 
-from jflows.train import Monitor
 from jflows.utils import compute_ESS_log, resample
 
+from .core.checks import integer, nonnegative_real
 from .core.domain import Mixed_Domain
 from .utils import _mixed_mala_chunk
 
 
 __all__ = [
-    "Molecular_Monitor",
     "train_molecular_forward_KLX_G",
     "train_molecular_forward_KLXX_G",
 ]
 
 
 _BETA1, _BETA2, _EPS = 0.9, 0.999, 1e-8
-_MAX_SNAPSHOTS = 32
-
-
-def _integer(name: str, value, minimum: int = 1) -> int:
-    if isinstance(value, bool):
-        raise ValueError(f"{name} must be an integer, not a boolean")
-    try:
-        result = operator.index(value)
-    except TypeError as exc:
-        raise ValueError(f"{name} must be an integer, got {value!r}") from exc
-    if result < minimum:
-        raise ValueError(f"{name} must be at least {minimum}, got {value!r}")
-    return result
-
-
-def _screen(name: str, value) -> float:
-    try:
-        result = float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{name} must be a real scalar, got {value!r}") from exc
-    if math.isnan(result) or result < 0:
-        raise ValueError(f"{name} must be nonnegative")
-    return result
-
-
-class Molecular_Monitor(Monitor):
-    """Report the target-pool ratio moment without calling it stage ESS.
-
-    The packed forward trainers evaluate ``compute_ESS_log(z)`` on samples
-    from the current target pool. This is a useful concentration warning, but
-    it is not the proposal-side importance ESS used by the Boltzmann gate.
-    """
-
-    def _emit(self, t, loss, concentration) -> None:
-        self.printer(
-            f"{self.prefix}step {int(t):>5d}   "
-            f"loss = {float(loss):+.4e}   "
-            f"target-ratio C = {float(concentration):.4f}"
-        )
 
 
 def _clip_global(grads, ceiling: float):
@@ -214,7 +173,8 @@ def _adam_step(
 
 @eqx.filter_jit
 def train_molecular_forward_KLX_G(
-    samples: Array,
+    target_samples: Array,
+    source_samples: Array,
     source,
     target,
     flow,
@@ -230,67 +190,77 @@ def train_molecular_forward_KLX_G(
     seed: int | Array = 0,
     checkpoint: bool = False,
     lr_warmup: int = 0,
-    snapshot_steps: tuple[int, ...] = (),
 ) -> tuple:
     """Train an inverse flow ``G`` on potential-space SMC particles.
+
+    ``target_samples`` are potential-space particles approximating the stage
+    target and supply the forward-KL/X loss. ``source_samples`` follow the
+    stage source and are pushed through the current inverse flow before any
+    correction; their full proposal-to-target importance weights supply the
+    honest per-step ESS history.
 
     ``e_clip`` is an optimizer-only relative energy screen:
     ``target(y) - energy_origin <= e_clip``. Honest SMC and stage ESS are
     computed outside this function and never see clipped target values.
-    Returns the flow, per-step target-ratio concentration, kept fraction, and
-    a Boolean history recording whether each Adam update was applied. If
-    ``snapshot_steps`` is nonempty, a fifth return contains the post-update
-    flows at those steps. Snapshot parameters remain inside ordinary JAX
-    dataflow; training never depends on host debug callbacks.
+    Returns the flow, per-step batch ESS, kept fraction, and a Boolean history
+    recording whether each Adam update was applied.
     """
 
-    if samples.ndim != 2 or samples.shape[0] < 1:
-        raise ValueError(f"samples must have shape [N, d], got {samples.shape}")
-    n_batch = _integer("n_batch", n_batch)
-    steps = _integer("steps", steps)
-    if n_batch > samples.shape[0]:
-        raise ValueError("n_batch cannot exceed the molecular sample pool")
+    pools = (target_samples, source_samples)
+    if any(value.ndim != 2 or value.shape[0] < 1 for value in pools):
+        raise ValueError(
+            "target_samples and source_samples must have shape [N, d]"
+        )
+    if source_samples.shape[1] != target_samples.shape[1]:
+        raise ValueError(
+            "target_samples and source_samples must share one dimension"
+        )
+    n_batch = integer("n_batch", n_batch)
+    steps = integer("steps", steps)
+    if n_batch > min(target_samples.shape[0], source_samples.shape[0]):
+        raise ValueError(
+            "n_batch cannot exceed the source or target sample pool"
+        )
     if not math.isfinite(lr) or lr <= 0:
         raise ValueError("lr must be positive and finite")
-    lr_warmup = _integer("lr_warmup", lr_warmup, minimum=0)
-    if any(
-        not isinstance(value, int)
-        or isinstance(value, bool)
-        or value < 1
-        or value > steps
-        for value in snapshot_steps
-    ):
-        raise ValueError("snapshot_steps must contain integers in [1, steps]")
-    if tuple(sorted(set(snapshot_steps))) != snapshot_steps:
-        raise ValueError("snapshot_steps must be strictly increasing")
-    if len(snapshot_steps) > _MAX_SNAPSHOTS:
-        raise ValueError(
-            f"snapshot_steps is limited to {_MAX_SNAPSHOTS} sparse checkpoints"
-        )
+    lr_warmup = integer("lr_warmup", lr_warmup, minimum=0)
     if not math.isfinite(coeff_lambda) or coeff_lambda < 0:
         raise ValueError("coeff_lambda must be nonnegative and finite")
-    e_clip = _screen("e_clip", e_clip)
-    g_clip = _screen("g_clip", g_clip)
+    e_clip = nonnegative_real("e_clip", e_clip)
+    g_clip = nonnegative_real("g_clip", g_clip)
     key = jax.random.fold_in(jax.random.key(31), seed)
     params, static = eqx.partition(flow, eqx.is_inexact_array)
     m0 = jax.tree.map(jnp.zeros_like, params)
     v0 = jax.tree.map(jnp.zeros_like, params)
     origin = jnp.asarray(energy_origin)
-    snapshot_indices = jnp.asarray(snapshot_steps, dtype=jnp.int32)
-    snapshot_params = jax.tree.map(
-        lambda value: jnp.zeros(
-            (len(snapshot_steps), *value.shape), dtype=value.dtype
-        ),
-        params,
-    )
 
     def body(carry, step_index):
-        current, first_moment, second_moment, update_count, snapshots = carry
-        batch_key, perm_key = jax.random.split(jax.random.fold_in(key, step_index))
-        indices = jax.random.choice(
-            batch_key, samples.shape[0], (n_batch,), replace=False
+        current, first_moment, second_moment, update_count = carry
+        target_key, source_key, perm_key = jax.random.split(
+            jax.random.fold_in(key, step_index), 3
         )
-        y = samples[indices]
+        y = target_samples[
+            jax.random.choice(
+                target_key,
+                target_samples.shape[0],
+                (n_batch,),
+                replace=False,
+            )
+        ]
+        x_source = source_samples[
+            jax.random.choice(
+                source_key,
+                source_samples.shape[0],
+                (n_batch,),
+                replace=False,
+            )
+        ]
+        flow_now = eqx.combine(current, static)
+        proposal_y, proposal_ladj = flow_now.inv_and_ladj(x_source)
+        proposal_y = lax.stop_gradient(proposal_y)
+        proposal_log_weight = lax.stop_gradient(
+            source(x_source) - target(proposal_y) + proposal_ladj
+        )
         energy = lax.stop_gradient(target(y))
         energy_keep = jnp.isfinite(energy)
         if e_clip != float("inf"):
@@ -331,63 +301,29 @@ def train_molecular_forward_KLX_G(
                 count > 0,
             )
         )
-        if snapshot_steps:
-            capture = jnp.any(snapshot_indices == step_index)
-
-            def save_snapshot(values):
-                slot = jnp.argmax(snapshot_indices == step_index)
-                return jax.tree.map(
-                    lambda stored, value: lax.dynamic_update_index_in_dim(
-                        stored, value, slot, axis=0
-                    ),
-                    values,
-                    current,
-                )
-
-            snapshots = lax.cond(
-                capture,
-                save_snapshot,
-                lambda values: values,
-                snapshots,
-            )
-        log_weight = jnp.where(keep, z, -jnp.inf)
-        concentration = lax.cond(
-            count > 0,
-            lambda: compute_ESS_log(log_weight),
-            lambda: jnp.asarray(0.0, dtype=z.dtype),
-        )
+        ess = compute_ESS_log(proposal_log_weight)
         kept_fraction = count.astype(z.dtype) / n_batch
         if monitor is not None:
-            monitor.report(step_index, loss, concentration)
-        return (current, first_moment, second_moment, update_count, snapshots), (
-            concentration,
+            monitor.report(step_index, loss, ess)
+        return (current, first_moment, second_moment, update_count), (
+            ess,
             kept_fraction,
             update_applied,
         )
 
     indices = jnp.arange(1, steps + 1)
-    (params, _, _, _, snapshot_params), (ratio, kept, updated) = lax.scan(
+    (params, _, _, _), (ess, kept, updated) = lax.scan(
         body,
         (
             params,
             m0,
             v0,
             jnp.asarray(0, dtype=jnp.int32),
-            snapshot_params,
         ),
         indices,
     )
     trained = eqx.combine(params, static)
-    if snapshot_steps:
-        snapshots = tuple(
-            eqx.combine(
-                jax.tree.map(lambda values: values[index], snapshot_params),
-                static,
-            )
-            for index in range(len(snapshot_steps))
-        )
-        return trained, ratio, kept, updated, snapshots
-    return trained, ratio, kept, updated
+    return trained, ess, kept, updated
 
 
 @eqx.filter_jit
@@ -416,7 +352,6 @@ def train_molecular_forward_KLXX_G(
     seed: int | Array = 0,
     checkpoint: bool = False,
     lr_warmup: int = 0,
-    snapshot_steps: tuple[int, ...] = (),
 ) -> tuple:
     """Train molecular ``KL + X_mu + X_mix`` on supplied stage pools.
 
@@ -425,11 +360,11 @@ def train_molecular_forward_KLXX_G(
     and ``hat_samples`` are a mixed-domain quench-and-temper coverage pool.
     The detached pushforward of ``source_samples`` supplies ``bar_nu``.  The
     mixture term uses ``coeff_alpha * hat_mu + coeff_beta * bar_nu`` while the
-    main target batch retains the KL + ``coeff_lambda * X_mu`` objective.
-    The four-value return matches :func:`train_molecular_forward_KLX_G`;
-    supplying sparse ``snapshot_steps`` adds a fifth tuple of post-update
-    flows. The schedule is static under JIT and is limited to 32 entries to
-    bound checkpoint storage, which scales with model size.
+    main target batch retains the KL + ``coeff_lambda * X_mu`` objective. The
+    same pre-update source minibatch supplies the honest proposal-to-target
+    importance weights returned as the per-step ESS history; optimizer-only
+    ``e_clip`` never screens those weights.
+    The four-value return matches :func:`train_molecular_forward_KLX_G`.
     """
 
     pools = (target_samples, source_samples, hat_samples)
@@ -440,51 +375,28 @@ def train_molecular_forward_KLXX_G(
     domain._validate(target_samples, "molecular KLXX target samples")
     domain._validate(source_samples, "molecular KLXX source samples")
     domain._validate(hat_samples, "molecular KLXX hat samples")
-    n_batch = _integer("n_batch", n_batch, minimum=2)
-    steps = _integer("steps", steps)
+    n_batch = integer("n_batch", n_batch, minimum=2)
+    steps = integer("steps", steps)
     if n_batch > min(target_samples.shape[0], source_samples.shape[0]):
         raise ValueError("n_batch cannot exceed the source or target pool")
     if not math.isfinite(lr) or lr <= 0:
         raise ValueError("lr must be positive and finite")
-    lr_warmup = _integer("lr_warmup", lr_warmup, minimum=0)
-    if any(
-        not isinstance(value, int)
-        or isinstance(value, bool)
-        or value < 1
-        or value > steps
-        for value in snapshot_steps
-    ):
-        raise ValueError("snapshot_steps must contain integers in [1, steps]")
-    if tuple(sorted(set(snapshot_steps))) != snapshot_steps:
-        raise ValueError("snapshot_steps must be strictly increasing")
-    if len(snapshot_steps) > _MAX_SNAPSHOTS:
-        raise ValueError(
-            f"snapshot_steps is limited to {_MAX_SNAPSHOTS} sparse checkpoints"
-        )
+    lr_warmup = integer("lr_warmup", lr_warmup, minimum=0)
     coefficients = (coeff_lambda, coeff_alpha, coeff_beta)
     if any(not math.isfinite(value) or value < 0 for value in coefficients):
         raise ValueError("KLXX coefficients must be nonnegative and finite")
-    if coeff_alpha + coeff_beta <= 0:
-        raise ValueError("at least one KLXX mixture coefficient must be positive")
     if not math.isfinite(mc_step) or mc_step <= 0:
         raise ValueError("mc_step must be positive and finite")
-    mc_iters = _integer("mc_iters", mc_iters)
-    images = _integer("images", images)
-    e_clip = _screen("e_clip", e_clip)
-    g_clip = _screen("g_clip", g_clip)
+    mc_iters = integer("mc_iters", mc_iters, minimum=0)
+    images = integer("images", images)
+    e_clip = nonnegative_real("e_clip", e_clip)
+    g_clip = nonnegative_real("g_clip", g_clip)
 
     key = jax.random.fold_in(jax.random.key(37), seed)
     params, static = eqx.partition(flow, eqx.is_inexact_array)
     m0 = jax.tree.map(jnp.zeros_like, params)
     v0 = jax.tree.map(jnp.zeros_like, params)
     origin = jnp.asarray(energy_origin)
-    snapshot_indices = jnp.asarray(snapshot_steps, dtype=jnp.int32)
-    snapshot_params = jax.tree.map(
-        lambda value: jnp.zeros(
-            (len(snapshot_steps), *value.shape), dtype=value.dtype
-        ),
-        params,
-    )
     mixture_weight = jnp.concatenate(
         (
             jnp.full((n_batch,), coeff_alpha),
@@ -493,7 +405,7 @@ def train_molecular_forward_KLXX_G(
     )
 
     def body(carry, step_index):
-        current, first_moment, second_moment, update_count, snapshots = carry
+        current, first_moment, second_moment, update_count = carry
         (
             target_key,
             source_key,
@@ -526,7 +438,11 @@ def train_molecular_forward_KLXX_G(
             images=images,
         )
         flow_now = eqx.combine(current, static)
-        y_bar = lax.stop_gradient(domain.wrap(flow_now.inv(x_source)))
+        y_bar, proposal_ladj = flow_now.inv_and_ladj(x_source)
+        y_bar = lax.stop_gradient(domain.wrap(y_bar))
+        proposal_log_weight = lax.stop_gradient(
+            source(x_source) - target(y_bar) + proposal_ladj
+        )
         y_mix = resample(
             mixture_key,
             jnp.concatenate((y_hat, y_bar), axis=0),
@@ -546,17 +462,17 @@ def train_molecular_forward_KLXX_G(
         def loss_fn(trainable):
             candidate = eqx.combine(trainable, static)
             latent, ladj = candidate.call_and_ladj(y)
-            target_ratio = source(latent) - target_energy - ladj
+            target_z = source(latent) - target_energy - ladj
             target_valid = lax.stop_gradient(
-                target_keep & jnp.isfinite(target_ratio)
+                target_keep & jnp.isfinite(target_z)
             )
             mix_latent, mix_ladj = candidate.call_and_ladj(y_mix)
-            mixture_ratio = source(mix_latent) - mixture_energy - mix_ladj
+            mixture_z = source(mix_latent) - mixture_energy - mix_ladj
             mixture_valid = lax.stop_gradient(
-                mixture_keep & jnp.isfinite(mixture_ratio)
+                mixture_keep & jnp.isfinite(mixture_z)
             )
-            target_safe = jnp.where(target_valid, target_ratio, 0.0)
-            mixture_safe = jnp.where(mixture_valid, mixture_ratio, 0.0)
+            target_safe = jnp.where(target_valid, target_z, 0.0)
+            mixture_safe = jnp.where(mixture_valid, mixture_z, 0.0)
             target_count = jnp.sum(target_valid)
             target_kl = jnp.sum(target_safe) / jnp.maximum(target_count, 1.0)
             target_x = _masked_pair_mean(
@@ -571,10 +487,10 @@ def train_molecular_forward_KLXX_G(
             )
             scale = (coeff_alpha + coeff_beta) ** 2
             loss = target_kl + coeff_lambda * target_x + scale * mixture_x
-            return loss, (target_ratio, target_valid, mixture_valid)
+            return loss, (target_z, target_valid, mixture_valid)
 
         differentiated_loss = jax.checkpoint(loss_fn) if checkpoint else loss_fn
-        (loss, (ratio, target_valid, mixture_valid)), grads = jax.value_and_grad(
+        (loss, (z, target_valid, mixture_valid)), grads = jax.value_and_grad(
             differentiated_loss, has_aux=True
         )(current)
         target_count = jnp.sum(target_valid)
@@ -592,60 +508,26 @@ def train_molecular_forward_KLXX_G(
                 (target_count > 0) & (mixture_count > 0),
             )
         )
-        if snapshot_steps:
-            capture = jnp.any(snapshot_indices == step_index)
-
-            def save_snapshot(values):
-                slot = jnp.argmax(snapshot_indices == step_index)
-                return jax.tree.map(
-                    lambda stored, value: lax.dynamic_update_index_in_dim(
-                        stored, value, slot, axis=0
-                    ),
-                    values,
-                    current,
-                )
-
-            snapshots = lax.cond(
-                capture,
-                save_snapshot,
-                lambda values: values,
-                snapshots,
-            )
-        log_weight = jnp.where(target_valid, ratio, -jnp.inf)
-        concentration = lax.cond(
-            target_count > 0,
-            lambda: compute_ESS_log(log_weight),
-            lambda: jnp.asarray(0.0, dtype=ratio.dtype),
-        )
-        kept_fraction = jnp.minimum(target_count, mixture_count).astype(ratio.dtype) / n_batch
+        ess = compute_ESS_log(proposal_log_weight)
+        kept_fraction = jnp.minimum(target_count, mixture_count).astype(z.dtype) / n_batch
         if monitor is not None:
-            monitor.report(step_index, loss, concentration)
-        return (current, first_moment, second_moment, update_count, snapshots), (
-            concentration,
+            monitor.report(step_index, loss, ess)
+        return (current, first_moment, second_moment, update_count), (
+            ess,
             kept_fraction,
             update_applied,
         )
 
     indices = jnp.arange(1, steps + 1)
-    (params, _, _, _, snapshot_params), (ratio, kept, updated) = lax.scan(
+    (params, _, _, _), (ess, kept, updated) = lax.scan(
         body,
         (
             params,
             m0,
             v0,
             jnp.asarray(0, dtype=jnp.int32),
-            snapshot_params,
         ),
         indices,
     )
     trained = eqx.combine(params, static)
-    if snapshot_steps:
-        snapshots = tuple(
-            eqx.combine(
-                jax.tree.map(lambda values: values[index], snapshot_params),
-                static,
-            )
-            for index in range(len(snapshot_steps))
-        )
-        return trained, ratio, kept, updated, snapshots
-    return trained, ratio, kept, updated
+    return trained, ess, kept, updated

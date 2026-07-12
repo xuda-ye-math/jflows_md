@@ -16,6 +16,12 @@ jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp  # noqa: E402
 
 from jflows.potential import Potential  # noqa: E402
+from jflows.utils import (  # noqa: E402
+    compute_ESS_log,
+    importance_weights_log,
+    linear_weights_from_log,
+    resample,
+)
 from jflows_md.boltzmann import (  # noqa: E402
     _operation_key,
     molecular_boltzmann_forward_KLX_G,
@@ -24,6 +30,7 @@ from jflows_md.boltzmann import (  # noqa: E402
 from jflows_md.core.domain import Mixed_Domain  # noqa: E402
 from jflows_md.flow import Mixed_NSF  # noqa: E402
 from jflows_md.source import Molecular_Source  # noqa: E402
+from jflows_md.train import train_molecular_forward_KLXX_G  # noqa: E402
 from jflows_md.utils import annealed_importance_sampling  # noqa: E402
 
 
@@ -84,7 +91,6 @@ def main() -> None:
         mc_step=1e-3,
         mc_iters=1,
         coeff_lambda=1.0,
-        selection_steps=(1, 2),
         bg_param={
             "t_safe": 1.0,
             "tau_smc": 0.0,
@@ -107,19 +113,18 @@ def main() -> None:
     assert 0.0 < stages[0]["identity_ess"] <= 1.0
     assert stages[0]["selected"] in ("trained", "identity")
     assert stages[0]["ess_history"].shape == (2,)
-    assert stages[0]["ratio_history"].shape == (2,)
-    assert tuple(map(int, stages[0]["checkpoint_steps"])) == (-1, 0, 1, 2)
-    assert tuple(stages[0]["checkpoint_labels"]) == (
-        "identity",
-        "warm_start",
-        "checkpoint",
-        "final",
-    )
-    assert stages[0]["checkpoint_ess"].shape == (4,)
-    assert stages[0]["selected_step"] in (-1, 0, 1, 2)
     assert abs(
-        stages[0]["ess"] - float(jnp.max(stages[0]["checkpoint_ess"]))
+        stages[0]["ess"]
+        - max(stages[0]["trained_ess"], stages[0]["identity_ess"])
     ) < 1e-12
+    retired = {
+        "selected_checkpoint",
+        "selected_step",
+        "checkpoint_steps",
+        "checkpoint_ess",
+        "checkpoint_labels",
+    }
+    assert retired.isdisjoint(stages[0])
     assert stages[0]["kept_history"].shape == (2,)
     assert stages[0]["update_history"].shape == (2,)
     assert stages[0]["smc_ess"].shape == (2,)
@@ -167,7 +172,6 @@ def main() -> None:
         e_clip=1000.0,
         g_clip=100.0,
         lr_warmup=2,
-        selection_steps=(1, 2),
         seed=306,
     )
     jax.block_until_ready(klxx_particles)
@@ -175,13 +179,46 @@ def main() -> None:
     assert bool(jnp.isfinite(klxx_particles).all())
     assert len(klxx_stages) == 1 and klxx_stages[0]["t"] == 1.0
     assert klxx_stages[0]["objective"] == "klxx"
-    assert tuple(map(int, klxx_stages[0]["checkpoint_steps"])) == (-1, 0, 1, 2)
     assert abs(
         klxx_stages[0]["ess"]
-        - float(jnp.max(klxx_stages[0]["checkpoint_ess"]))
+        - max(
+            klxx_stages[0]["trained_ess"],
+            klxx_stages[0]["identity_ess"],
+        )
     ) < 1e-12
     assert klxx_stages[0]["hat_mala_acceptance"].shape == (1,)
     assert bool(jnp.isfinite(klxx_stages[0]["ess_history"]).all())
+
+    zero_mix_flow, zero_mix_ess, _, _ = train_molecular_forward_KLXX_G(
+        x_valid,
+        x_valid,
+        x_valid,
+        source,
+        target,
+        klxx_flow,
+        domain,
+        n_batch=8,
+        steps=1,
+        lr=1e-3,
+        coeff_alpha=0.0,
+        coeff_beta=0.0,
+        mc_iters=0,
+        seed=307,
+    )
+    jax.block_until_ready((zero_mix_flow, zero_mix_ess))
+    assert zero_mix_ess.shape == (1,) and bool(jnp.isfinite(zero_mix_ess).all())
+    zero_key = jax.random.fold_in(jax.random.key(37), 307)
+    zero_keys = jax.random.split(jax.random.fold_in(zero_key, 1), 7)
+    zero_source_batch = x_valid[
+        jax.random.choice(
+            zero_keys[1], x_valid.shape[0], (8,), replace=False
+        )
+    ]
+    zero_proposal, zero_ladj = klxx_flow.inv_and_ladj(zero_source_batch)
+    zero_expected_ess = compute_ESS_log(
+        source(zero_source_batch) - target(zero_proposal) + zero_ladj
+    )
+    assert bool(jnp.allclose(zero_mix_ess[0], zero_expected_ess, atol=1e-10))
 
     ais_flow = Mixed_NSF(
         jax.random.key(303),
@@ -190,7 +227,26 @@ def main() -> None:
         transforms=2,
         hidden_features=(8, 8),
     )
-    ais_samples = annealed_importance_sampling(
+    ais_samples, initial_log_weights = annealed_importance_sampling(
+        jax.random.key(304),
+        x_valid,
+        source,
+        target,
+        ais_flow,
+        ladder=2,
+        step=1e-3,
+        iters=1,
+        chunk=2,
+        return_initial_log_weights=True,
+    )
+    jax.block_until_ready(ais_samples)
+    expected_log_weights = importance_weights_log(
+        x_valid, source, target, ais_flow, "G", chunk=2
+    )
+    assert bool(
+        jnp.allclose(initial_log_weights, expected_log_weights, atol=1e-10)
+    )
+    ais_default = annealed_importance_sampling(
         jax.random.key(304),
         x_valid,
         source,
@@ -201,7 +257,36 @@ def main() -> None:
         iters=1,
         chunk=2,
     )
-    jax.block_until_ready(ais_samples)
+    assert bool(jnp.array_equal(ais_default, ais_samples))
+
+    manual_key = jax.random.key(308)
+    manual, manual_ladj = ais_flow.inv_and_ladj(x_valid)
+    manual_initial = -target(manual) + source(x_valid) + manual_ladj
+    for level in range(1, 4):
+        if level == 1:
+            full_weight = manual_initial
+        else:
+            latent, ladj_g = ais_flow.call_and_ladj(manual)
+            full_weight = -target(manual) + source(latent) - ladj_g
+        resample_key, _ = jax.random.split(jax.random.fold_in(manual_key, level))
+        manual = resample(
+            resample_key,
+            manual,
+            linear_weights_from_log(full_weight / 3.0),
+            N=manual.shape[0],
+        )
+    public_manual = annealed_importance_sampling(
+        manual_key,
+        x_valid,
+        source,
+        target,
+        ais_flow,
+        ladder=3,
+        step=1e-3,
+        iters=0,
+        chunk=1,
+    )
+    assert bool(jnp.array_equal(public_manual, manual))
     assert ais_samples.shape == x_valid.shape
     assert bool(jnp.isfinite(ais_samples).all())
     assert bool(

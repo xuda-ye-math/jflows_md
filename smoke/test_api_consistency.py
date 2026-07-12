@@ -20,7 +20,6 @@ from jflows.flow import (  # noqa: E402
 )
 from jflows.train import Monitor  # noqa: E402
 from jflows_md import (  # noqa: E402
-    Molecular_Monitor,
     Molecular_Potential,
     Molecular_Source,
 )
@@ -54,11 +53,15 @@ def main() -> None:
     assert "checkpoint" in inspect.signature(molecular_boltzmann_forward_KLX_G).parameters
     assert "checkpoint" in inspect.signature(train_molecular_forward_KLXX_G).parameters
     assert "checkpoint" in inspect.signature(molecular_boltzmann_forward_KLXX_G).parameters
-    assert "snapshot_steps" in inspect.signature(train_molecular_forward_KLX_G).parameters
-    assert "snapshot_steps" in inspect.signature(train_molecular_forward_KLXX_G).parameters
-    assert "selection_steps" in inspect.signature(molecular_boltzmann_forward_KLX_G).parameters
-    assert "selection_steps" in inspect.signature(molecular_boltzmann_forward_KLXX_G).parameters
-    assert issubclass(Molecular_Monitor, Monitor)
+    assert "snapshot_steps" not in inspect.signature(train_molecular_forward_KLX_G).parameters
+    assert "snapshot_steps" not in inspect.signature(train_molecular_forward_KLXX_G).parameters
+    assert "selection_steps" not in inspect.signature(molecular_boltzmann_forward_KLX_G).parameters
+    assert "selection_steps" not in inspect.signature(molecular_boltzmann_forward_KLXX_G).parameters
+    messages = []
+    Monitor(1, "[molecular] ", messages.append)._emit(1, -2.0, 0.25)
+    assert messages == [
+        "[molecular] step     1   loss = -2.0000e+00   ESS = 0.2500"
+    ]
 
     domain = Mixed_Domain(2, 1)
     source = Molecular_Source(domain)
@@ -85,7 +88,7 @@ def main() -> None:
     expect_value_error(lambda: target(jnp.zeros((1, target.dimension - 1))))
     expect_value_error(lambda: target(jnp.zeros((1, target.dimension + 1))))
     expect_value_error(lambda: target(jnp.zeros((target.dimension,))))
-    print("PASS jflows API, dimensions, checkpoint controls, and float32 defaults")
+    print("PASS jflows API, dimensions, final-only gate, and float32 defaults")
 
 
 if __name__ == "__main__":

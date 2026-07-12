@@ -26,13 +26,13 @@ JAX and Equinox.
   and `chunk` conventions as `jflows`.
 - **Boltzmann-generator training.** Molecular forward KL, KL+X, and KL+X+X
   trainers share the adaptive controller, optimizer-only `e_clip`, global
-  `g_clip`, honest proposal-side stage ESS, fixed-checkpoint flow selection,
-  and MALA. Masked losses use finite-safe selection, gradient clipping remains
-  stable when a float32 sum of squares overflows, and an Adam update is
-  committed atomically only when its loss, gradients, moments, and resulting
-  parameters are finite. The live target-pool ratio moment is deliberately
-  labeled separately from stage ESS. KL+X+X adds a mixed-domain
-  quench-and-temper coverage pool. No sharpening is part of the target.
+  `g_clip`, standard per-step batch ESS, honest proposal-side stage ESS,
+  final-versus-identity flow selection, and MALA. Masked losses use finite-safe
+  selection, gradient clipping remains stable when a float32 sum of squares
+  overflows, and an Adam update is committed atomically only when its loss,
+  gradients, moments, and resulting parameters are finite. KL+X+X adds a
+  mixed-domain quench-and-temper coverage pool. No sharpening is part of the
+  target.
 - **Public compatibility boundary.** `jflows_md` imports only public `jflows`
   interfaces. Low-level coordinate, force-field, chirality, and spline code
   stays under `jflows_md.core`.
@@ -72,6 +72,24 @@ Jacobian for the standard configurational measure after quotienting global
 translation and rotation. The canonical Cartesian frame is only a
 representative; it is not a six-constraint gauge-slice ensemble. The target
 contains neither a sharpened surrogate nor clipped evaluation energies.
+
+For an explicit diagnostic or training bridge, construct a separate soft
+surrogate without mutating the physical target:
+
+```python
+soft = target.regularized(
+    50.0,
+    energy_scale_kj_mol=50.0,
+    tail_fraction=0.01,
+)
+```
+
+The cutoff is the Cartesian energy excess above the bundle reference, in
+kJ/mol. The lin-log scale controls compression above that cutoff and
+`tail_fraction` retains a coercive linear fraction in `[0, 1]`. The coordinate
+Jacobian is never regularized. Such a surrogate must be identified explicitly
+and any physical benchmark must ultimately sharpen back to `target` and report
+weights under the unchanged physical potential.
 
 ## Package layout
 
@@ -192,8 +210,8 @@ The public modules mirror the organization of `jflows`:
 - `jflows_md.potential`: `Molecular_Potential`
 - `jflows_md.source`: `Molecular_Source`
 - `jflows_md.system`: `Molecular_Bundle`, `available_bundles`
-- `jflows_md.train`: `Molecular_Monitor`,
-  `train_molecular_forward_KLX_G`, `train_molecular_forward_KLXX_G`
+- `jflows_md.train`: `train_molecular_forward_KLX_G`,
+  `train_molecular_forward_KLXX_G`
 - `jflows_md.boltzmann`: `molecular_boltzmann_forward_KLX_G`,
   `molecular_boltzmann_forward_KLXX_G`
 - `jflows_md.artifacts`: exact flow-architecture metadata, source hashing, and
@@ -204,27 +222,43 @@ The public modules mirror the organization of `jflows`:
 Frequently used objects are lazily exposed directly from `jflows_md`. User
 programs should not depend on `jflows_md.core`.
 
+Training drivers use `jflows.train.Monitor`, which reports only loss and the
+standard per-step batch ESS. Stage acceptance separately reports proposal ESS
+on the full validation set.
+
+The companion directly reuses the public `jflows` potential/flow bases, spline
+transforms, monitor, importance weights, log-to-linear weight conversion, ESS,
+resampling, potential algebra, and L-BFGS implementation. Mixed-domain MALA,
+SMC/AIS, molecular sources, and rematerialized stage training stay here
+because their Euclidean/torus and persistence contracts differ from the
+single-domain routines in `jflows`.
+
 The mixed flow follows `jflows` direction conventions. `F` maps source to
 target and `G = F^{-1}` maps target to source. Molecular forward training fixes
 the flow as `G`, so its public driver and AIS surrogate do not accept a
 direction string. Increasing `chunk` means more sequential row partitions and
 therefore fewer physical samples in each compiled molecular call.
 
-`selection_steps` is an optional sparse schedule of post-update flow snapshots
-used by the full-validation stage ESS gate. When enabled, the gate also tests
-exact identity (reported as step -1), the accepted pre-update warm start (step
-0), and the final trained flow. Stage records expose `selected_checkpoint`,
-`selected_step`, `checkpoint_labels`, `checkpoint_steps`, and
-`checkpoint_ess`. Snapshot storage is proportional to the number of requested
-checkpoints times the flow size, each distinct static schedule compiles a
-separate trainer executable, and schedules are therefore limited to 32 sparse
-entries. The separate Boolean `checkpoint` argument means JAX backward-pass
-rematerialization; it does not save or select flow snapshots.
+The full-validation stage gate compares exactly two maps: the final trained
+flow and exact identity. The higher proposal ESS is the sole post-training
+stage candidate, and it is accepted only if that ESS clears `tau_ess`. The
+Boolean `checkpoint` argument means JAX backward-pass rematerialization; it
+does not save or select intermediate flow snapshots.
 
 Potential-space SMC is classical: every ladder level rejuvenates at its
 matching intermediate potential. Flow-proposal AIS instead applies fractional
 geometric weights while rejuvenating at the final target at every level. It is
 a deliberately biased, score-free target surrogate rather than exact AIS/SMC.
+Its first proposal correction is computed directly from the original source
+particle, inverse-flow image, and matching Jacobian; later levels refresh the
+latent after resampling and MALA, matching `jflows` 0.2 semantics.
+
+Version 0.2.0 is the synchronization boundary with `jflows>=0.2.0`. It removes
+the experimental snapshot/selection API, adopts direct-first AIS proposal
+weights, and relies on the strict continuing Armijo and finite potential
+algebra supplied by that dependency. Artifacts should record both repository
+commits because earlier 0.1.x training histories and controller metadata are
+not interchangeable with this release.
 
 ## Frozen molecular targets
 

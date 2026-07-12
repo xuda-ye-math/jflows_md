@@ -16,11 +16,16 @@ from jflows_md.boltzmann import (  # noqa: E402
     _bg_parameters,
     _ess as _bg_ess,
     _linear_weights as _bg_linear_weights,
+    molecular_boltzmann_forward_KLXX_G,
 )
 from jflows_md.core.domain import Mixed_Domain  # noqa: E402
 from jflows_md.flow import Mixed_NSF  # noqa: E402
 from jflows_md.source import Molecular_Source  # noqa: E402
-from jflows_md.train import _adam_step, _clip_global  # noqa: E402
+from jflows_md.train import (  # noqa: E402
+    _adam_step,
+    _clip_global,
+    train_molecular_forward_KLXX_G,
+)
 from jflows_md.utils import (  # noqa: E402
     _linear_weights,
     mixed_mala,
@@ -37,6 +42,9 @@ class Toy_Potential(Potential):
 
     def __call__(self, samples):
         return 0.5 * jnp.sum(samples[:, : self.domain.euclidean_dim] ** 2, axis=-1)
+
+    def reference_internal(self):
+        return jnp.zeros((self.domain.dimension,))
 
 
 def raises(function) -> None:
@@ -179,6 +187,59 @@ def main() -> None:
     raises(lambda: _bg_parameters({"tau_ess": float("nan")}))
     raises(lambda: _bg_parameters({"enlarge_factor": 1.0}))
     raises(lambda: _bg_parameters({"max_retry": True}))
+
+    flow = Mixed_NSF(
+        jax.random.key(6),
+        domain,
+        bins=4,
+        transforms=2,
+        hidden_features=(8, 8),
+    ).zeros()
+    for alpha, beta in (
+        (-0.1, 0.5),
+        (0.5, -0.1),
+        (float("nan"), 0.5),
+        (0.5, float("nan")),
+        (float("inf"), 0.5),
+        (0.5, float("inf")),
+    ):
+        raises(
+            lambda alpha=alpha, beta=beta: train_molecular_forward_KLXX_G(
+                samples,
+                samples,
+                samples,
+                source,
+                target,
+                flow,
+                domain,
+                n_batch=2,
+                steps=1,
+                lr=1e-3,
+                coeff_alpha=alpha,
+                coeff_beta=beta,
+                mc_iters=0,
+            )
+        )
+        raises(
+            lambda alpha=alpha, beta=beta: molecular_boltzmann_forward_KLXX_G(
+                samples,
+                source,
+                target,
+                flow,
+                n_pool=2,
+                n_batch=2,
+                steps=1,
+                lr=1e-3,
+                ladder=1,
+                mc_step=1e-3,
+                mc_iters=0,
+                melt=0.0,
+                opt_step=1e-2,
+                opt_iters=0,
+                coeff_alpha=alpha,
+                coeff_beta=beta,
+            )
+        )
 
     print("PASS molecular finite-safety and pre-compilation validation edges")
 

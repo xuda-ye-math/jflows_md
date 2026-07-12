@@ -29,14 +29,14 @@ hash/path closure, frozen built-in manifests and lineage, and consistent
 quotient-measure metadata. A bounded two-particle
 glycerol test compiles the real energy/gradient and one MALA step. A tiny
 synthetic `R^2 x T^1` case compiles and runs mixed KL+X and KL+X+X trainers,
-sparse full-validation checkpoint selection, positive-melt quench-and-temper,
+final-versus-identity full-validation selection, positive-melt quench-and-temper,
 one adaptive Boltzmann-generator stage, and the G-native score-free AIS
 surrogate through a nonidentity mixed flow. Focused controller regressions
-prove the legacy no-selection warm start and trained-on-tie rule, and show that
-a finite intermediate checkpoint rescues a nonfinite final flow. The float32
-trainer smoke verifies post-update snapshot indexing and equality of the final
-snapshot with the returned trained flow. None of these launches a molecular
-training run.
+prove warm-start propagation, the trained-on-tie rule, final-endpoint-only
+scoring, validation after zero optimizer updates, safe identity fallback for a
+nonfinite final flow, and ESS-only retry behavior. The float32 trainer smoke
+also verifies rematerialized training and mixed finite/infinite proposal-weight
+ESS. None of these launches a molecular training run.
 
 Rebuild the bundles only when their versioned model definition changes:
 
