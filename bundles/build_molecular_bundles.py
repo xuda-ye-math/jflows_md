@@ -8,11 +8,12 @@ directory is required.
 
 Run from the repository root with
 
-    conda activate jflows
-    python bundles/build_molecular_bundles.py
+    conda activate jflows && \
+    PYTHONPATH=/mnt/projects/jflows:/mnt/projects/jflows_md \
+        python bundles/build_molecular_bundles.py
 
-Both live packages should first be registered with ``conda develop``. An
-explicit ``PYTHONPATH=/path/to/jflows:/path/to/jflows_md`` is also supported.
+Both local packages remain uninstalled; every run uses the explicit two-root
+``PYTHONPATH`` above.
 """
 
 from __future__ import annotations

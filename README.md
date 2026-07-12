@@ -95,11 +95,26 @@ The checked-in bundles are sufficient for runtime evaluation; OpenMM,
 ParmEd, and AmberTools are required only to rebuild or independently validate
 them.
 
-## Local Conda installation
+## Fresh environment for GitHub readers
 
-Use a prepared Conda environment containing compatible JAX, Equinox, NumPy,
-OpenMM, and ParmEd versions. Clone `jflows` and `jflows_md` into a common
-workspace:
+The supported project environment separates the dependency stacks:
+
+- install OpenMM and ParmEd from conda-forge for the molecular-science layer;
+- install the current JAX, Equinox, and Matplotlib stack with pip. The
+  [JAX installation guide](https://docs.jax.dev/en/latest/installation.html)
+  recommends pip for NVIDIA CUDA wheels.
+
+The [OpenMM installation guide](https://docs.openmm.org/development/userguide/application/01_getting_started.html)
+also documents pip packages; using conda-forge here is a project policy, not
+an upstream limitation. Create the dependency environment first:
+
+```bash
+conda create -n jflows -c conda-forge python=3.11 pip openmm parmed
+conda activate jflows
+python -m pip install --upgrade "jax[cuda13]" equinox matplotlib
+```
+
+Clone both source trees into a common workspace:
 
 ```bash
 mkdir -p "$HOME/src"
@@ -107,35 +122,32 @@ git clone https://github.com/xuda-ye-math/jflows.git "$HOME/src/jflows"
 git clone https://github.com/xuda-ye-math/jflows_md.git "$HOME/src/jflows_md"
 ```
 
-Register both live source trees with Conda. `conda develop` is provided by
-`conda-build`; it writes the source paths to the selected environment without
-copying the packages, so local edits take effect immediately:
+For readers who prefer conventional editable package imports, the public
+GitHub setup may be completed with:
 
 ```bash
-conda activate jflows
-conda develop -n jflows "$HOME/src/jflows" "$HOME/src/jflows_md"
+pip install -e "$HOME/src/jflows"
+pip install -e "$HOME/src/jflows_md"
 ```
 
-Verify that imports resolve to those checkouts:
+### Local project runtime
+
+Those editable installs are a convenience for external users, not the project
+workstation. Local runs keep both packages uninstalled and expose both roots
+explicitly through `PYTHONPATH`. Local edits then take effect on the next
+Python process while the environment remains package-free:
 
 ```bash
-conda activate jflows
-python -c \
+conda activate jflows && \
+PYTHONPATH=/mnt/projects/jflows:/mnt/projects/jflows_md python -c \
   "from pathlib import Path; import jflows, jflows_md; print(Path(jflows.__file__).resolve()); print(Path(jflows_md.__file__).resolve())"
 ```
 
-To unregister both source trees and leave the environment package-free:
+Run molecular programs with the same two-root search path:
 
 ```bash
-conda develop -u -n jflows "$HOME/src/jflows" "$HOME/src/jflows_md"
-```
-
-For provenance-sensitive experiment commands, explicit live roots remain a
-valid alternative to registration:
-
-```bash
-conda activate jflows
-PYTHONPATH="$HOME/src/jflows:$HOME/src/jflows_md" python molecular_driver.py
+conda activate jflows && \
+PYTHONPATH=/mnt/projects/jflows:/mnt/projects/jflows_md python molecular_driver.py
 ```
 
 ## Public API
@@ -182,12 +194,14 @@ determinant because those signs are not fixed stereocentres.
 
 ## Validation and maintenance
 
-With both source trees registered through Conda, run the accelerator-backed
-smoke suite from the repository root:
+Run the accelerator-backed smoke suite from the repository root with both live
+source trees visible:
 
 ```bash
-conda activate jflows
-XLA_PYTHON_CLIENT_PREALLOCATE=false python smoke/run_all.py
+conda activate jflows && \
+XLA_PYTHON_CLIENT_PREALLOCATE=false \
+  PYTHONPATH=/mnt/projects/jflows:/mnt/projects/jflows_md \
+  python smoke/run_all.py
 ```
 
 The suite covers bundle integrity, OpenMM energy/force parity, mixed-coordinate
@@ -199,8 +213,9 @@ compatibility. It does not launch production molecular training. See
 Rebuild bundles only when their versioned physical definition changes:
 
 ```bash
-conda activate jflows
-python bundles/build_molecular_bundles.py
+conda activate jflows && \
+PYTHONPATH=/mnt/projects/jflows:/mnt/projects/jflows_md \
+  python bundles/build_molecular_bundles.py
 ```
 
 The builder uses immutable seed artifacts already stored in each bundle and
