@@ -23,9 +23,9 @@ from jflows_md.utils import mixed_mala, sequential_monte_carlo  # noqa: E402
 
 
 NAMES = (
-    "fab_adp_ff96_obc1_v2",
-    "glycerol_gaff2_am1bcc_obc1_v2",
-    "diethanolamine_neutral_gaff2_am1bcc_obc1_v2",
+    "adp_ff96_obc1",
+    "glycerol_gaff2_am1bcc_obc1",
+    "diethanolamine_gaff2_am1bcc_obc1",
 )
 
 
@@ -60,7 +60,7 @@ def main() -> None:
         x = potential.cartesian(q)
         diagnostic_atoms = bundle.coordinates["diagnostic_chirality_atoms"]
         volume = signed_volume(x, *diagnostic_atoms)
-        if name == "fab_adp_ff96_obc1_v2":
+        if name == "adp_ff96_obc1":
             assert bool(jnp.all(volume > 0))
             assert bool(jnp.all(potential.support_mask(x)))
         else:
@@ -78,7 +78,7 @@ def main() -> None:
             )
         )
         assert parity_error < 1e-4, (name, parity_error)
-        if name == "fab_adp_ff96_obc1_v2":
+        if name == "adp_ff96_obc1":
             assert not bool(potential.support_mask(mirrored)[0])
         else:
             assert bool(potential.support_mask(mirrored)[0])

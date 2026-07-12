@@ -26,7 +26,7 @@
     "solute_dielectric": 1.0,
     "solvent_dielectric": 78.5
   },
-  "name": "fab_adp_ff96_obc1_v2",
+  "name": "adp_ff96_obc1",
   "openmm_version": "8.5.2",
   "schema_version": 1,
   "system_spec": "system.json",

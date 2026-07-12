@@ -1,7 +1,8 @@
 """OpenMM-side construction of immutable molecular bundles.
 
-This module is intentionally JAX-free. Run it in the ``jflows`` Conda
-environment, which provides OpenMM, ParmEd, and AmberTools.
+This module is intentionally JAX-free. Rebuilding immutable benchmark targets
+is an optional provenance workflow; ordinary runtime and training load the
+checked-in pure-array bundles directly.
 """
 
 from __future__ import annotations
@@ -23,6 +24,11 @@ from .zmatrix import build_zmatrix, validate_zmatrix
 
 KB_KJ_MOL_K = 0.00831446261815324
 ACE_COEFFICIENT = 28.3919551
+
+
+def normalize_amber_transcript(text: str, prefix: Path) -> str:
+    """Remove installation paths and canonicalize trailing whitespace."""
+    return text.replace(str(prefix), "<AMBERHOME>").rstrip() + "\n"
 
 
 def _json_write(path: Path, value: Any) -> None:

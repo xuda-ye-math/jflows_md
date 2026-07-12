@@ -18,9 +18,9 @@ JAX and Equinox.
 - **Frozen physical targets.** `Molecular_Potential` loads a verified bundle
   that fixes the force field, OBC1 implicit solvent, internal-coordinate chart,
   chirality support, validation frames, provenance, and integrity hashes.
-- **Three included benchmarks.** FAB-compatible alanine dipeptide (60D),
-  glycerol (36D), and neutral diethanolamine (48D) are distributed as outer
-  runtime bundles.
+- **Three repository benchmarks.** The source checkout carries outer runtime
+  bundles for FAB-compatible alanine dipeptide (60D), glycerol (36D), and
+  neutral diethanolamine (48D).
 - **Molecular sampling.** Mixed-domain MALA, potential-space SMC, and the
   G-native score-free AIS surrogate use the same `ladder`, `step`, `iters`,
   and `chunk` conventions as `jflows`.
@@ -38,7 +38,8 @@ import jax
 
 from jflows_md import Mixed_NSF, Molecular_Potential
 
-target = Molecular_Potential.from_bundle("fab_adp_ff96_obc1_v2")
+# Name lookup uses the outer bundles/ directory in a source checkout.
+target = Molecular_Potential.from_bundle("adp_ff96_obc1")
 source = target.source()
 q = source.samples(jax.random.key(0), 32)
 
@@ -75,9 +76,9 @@ jflows_md/
 ├── pyproject.toml
 ├── bundles/
 │   ├── build_molecular_bundles.py
-│   ├── fab_adp_ff96_obc1_v2/
-│   ├── glycerol_gaff2_am1bcc_obc1_v2/
-│   └── diethanolamine_neutral_gaff2_am1bcc_obc1_v2/
+│   ├── adp_ff96_obc1/
+│   ├── glycerol_gaff2_am1bcc_obc1/
+│   └── diethanolamine_gaff2_am1bcc_obc1/
 ├── jflows_md/
 │   ├── artifacts.py
 │   ├── boltzmann.py
@@ -92,30 +93,35 @@ jflows_md/
 ```
 
 The outer `bundles/` directory is intentional. Molecular data is not hidden
-inside the import package, and callers may also pass an explicit bundle path.
-The checked-in bundles are sufficient for runtime evaluation; OpenMM,
-ParmEd, and AmberTools are required only to rebuild or independently validate
-them.
+inside the import package. Editable source-checkout installs can use the short
+registry names shown above. Built wheels intentionally contain Python code
+only; wheel users must obtain a bundle directory separately and pass its path,
+for example
+`Molecular_Potential.from_bundle("/data/molecules/adp_ff96_obc1")`.
+The checked-in source-tree bundles are sufficient for runtime evaluation;
+OpenMM, ParmEd, and AmberTools are required only to rebuild or independently
+validate them.
 
 ## Fresh environment for GitHub readers
 
-The supported project environment separates the dependency stacks:
-
-- install OpenMM and ParmEd from conda-forge for the molecular-science layer;
-- install the current JAX, Equinox, and Matplotlib stack with pip. The
-  [JAX installation guide](https://docs.jax.dev/en/latest/installation.html)
-  recommends pip for NVIDIA CUDA wheels.
-
-The [OpenMM installation guide](https://docs.openmm.org/development/userguide/application/01_getting_started.html)
-also documents pip packages with CUDA support. That route requires more
-involved CUDA/runtime setup and is not recommended here; this project uses
-conda-forge for OpenMM and ParmEd. Create the dependency environment first:
+Use a fresh pip-only virtual environment and let pip select the latest
+compatible releases. On Linux with an NVIDIA CUDA 13 driver:
 
 ```bash
-conda create -n jflows -c conda-forge python=3.11 pip openmm parmed
-conda activate jflows
-python -m pip install --upgrade "jax[cuda13]" equinox matplotlib
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install --upgrade \
+  "jax[cuda13]" equinox "openmm[cuda13]" parmed mdtraj \
+  scipy matplotlib h5py scikit-learn
 ```
+
+The versioned extras are intentional: `jax[cuda13]` installs JAX's CUDA-13
+plugin stack, while `openmm[cuda13]` installs the OpenMM Python API together
+with its matching CUDA platform. Use the corresponding CUDA 12 extras when
+needed. The [JAX installation guide](https://docs.jax.dev/en/latest/installation.html)
+and [OpenMM installation guide](https://docs.openmm.org/development/userguide/application/01_getting_started.html)
+document these pip interfaces.
 
 Clone both source trees into a common workspace:
 
@@ -133,11 +139,37 @@ pip install -e "$HOME/src/jflows"
 pip install -e "$HOME/src/jflows_md"
 ```
 
-Verify that imports resolve to the editable checkouts:
+The runtime package does not require AmberTools. Readers working from a source
+checkout who want to construct new molecular bundles directly can instead
+request the optional bundle toolchain:
 
 ```bash
-python -c \
-  "from pathlib import Path; import jflows, jflows_md; print(Path(jflows.__file__).resolve()); print(Path(jflows_md.__file__).resolve())"
+pip install -e "$HOME/src/jflows_md[bundles]"
+```
+
+The `bundles` extra adds OpenMM, ParmEd, and
+`ambertools-unofficial`. The AmberTools wheel is an unofficial repackaging;
+every generated bundle must therefore record its exact version, data hashes,
+and resulting manifest.
+
+Verify the accelerator libraries, dependency closure, and editable checkouts:
+
+```bash
+python -m openmm.testInstallation
+pip check
+python
+```
+
+Then enter:
+
+```python
+>>> from pathlib import Path
+>>> import jax
+>>> import jflows
+>>> import jflows_md
+>>> print(jax.default_backend(), jax.devices())
+>>> print(Path(jflows.__file__).resolve())
+>>> print(Path(jflows_md.__file__).resolve())
 ```
 
 Molecular programs then use ordinary Python imports:
@@ -176,18 +208,19 @@ a deliberately biased, score-free target surrogate rather than exact AIS/SMC.
 
 ## Frozen molecular targets
 
-The built-in registry contains only quotient-measure v2 targets. The earlier
-v1 names used a canonical gauge-slice measure and are retired rather than
-silently reinterpreted. The coordinate reader can still open an explicit v1
-bundle for forensic reproducibility. Likewise, schema-1 flow artifacts require
-an explicit target from their original bundle/source revision; automatic
-built-in target discovery is a schema-2 contract.
+The built-in registry contains only quotient-measure coordinate-schema-2
+targets. The earlier schema-1 names used a canonical gauge-slice measure and
+are retired rather than silently reinterpreted. The coordinate reader can
+still open an explicit v1 bundle for forensic reproducibility. Likewise,
+schema-1 flow artifacts require an explicit target from their original
+bundle/source revision; automatic built-in target discovery is a schema-2
+contract.
 
 | Bundle | Physical model | Mixed coordinate domain |
 |---|---|---|
-| `fab_adp_ff96_obc1_v2` | FAB-compatible Amber ff96/OBC1, L-ADP only | R^42 x T^18 (60D) |
-| `glycerol_gaff2_am1bcc_obc1_v2` | GAFF2/AM1-BCC/OBC1, neutral | R^25 x T^11 (36D) |
-| `diethanolamine_neutral_gaff2_am1bcc_obc1_v2` | GAFF2/AM1-BCC/OBC1, explicitly neutral | R^33 x T^15 (48D) |
+| `adp_ff96_obc1` | FAB-compatible Amber ff96/OBC1, L-ADP only | R^42 x T^18 (60D) |
+| `glycerol_gaff2_am1bcc_obc1` | GAFF2/AM1-BCC/OBC1, neutral | R^25 x T^11 (36D) |
+| `diethanolamine_gaff2_am1bcc_obc1` | GAFF2/AM1-BCC/OBC1, explicitly neutral | R^33 x T^15 (48D) |
 
 Every target uses 300 K, mbondi2 radii, ACE nonpolar solvation, solvent and
 solute dielectric constants 78.5 and 1.0, zero salt, `NoCutoff`, and no
@@ -211,18 +244,34 @@ execution, MALA/SMC/AIS, artifact loading, chunking, and public `jflows`
 compatibility. It does not launch production molecular training. See
 [`smoke/README.md`](smoke/README.md) for the opt-in compilation benchmark.
 
-Reproduce and verify the frozen bundles in their matching toolchain with:
+Construct or verify bundles from the repository root with:
 
 ```bash
+pip install -e ".[bundles]"
 python bundles/build_molecular_bundles.py
 ```
 
+The no-argument command verifies the frozen historical targets. To construct a
+new small-molecule target with the currently installed AmberTools toolchain,
+give it a new scientific name and an unused output directory:
+
+```bash
+python bundles/build_molecular_bundles.py \
+  --only glycerol \
+  --name glycerol_gaff2_am1bcc_obc1_at26 \
+  --output generated/glycerol_gaff2_am1bcc_obc1_at26
+```
+
 The builder uses immutable seed artifacts already stored in each bundle and
-requires OpenMM, ParmEd, and AmberTools. It builds temporary candidates and
-accepts only exact matches to the pinned manifests; it does not overwrite the
-checked-in targets. Any seed, toolchain, Hamiltonian, or validation change
-requires a new bundle version and an explicit review of its provenance and
-hashes.
+requires OpenMM and ParmEd. Glycerol and diethanolamine rebuilding additionally
+requires AmberTools; the optional `bundles` extra supplies its command-line
+programs through `ambertools-unofficial`. AmberTools is not a runtime or
+training dependency. The existing small-molecule targets are frozen to their
+historical AmberTools 24.8 outputs, so a current version-26 toolchain must use
+the explicit `--name`/`--output` mode rather than overwrite them. Frozen
+verification creates temporary candidates and accepts only exact matches to
+pinned manifests. Any seed, toolchain, Hamiltonian, or validation change
+requires a new bundle name and an explicit review of its provenance and hashes.
 
 ## License
 

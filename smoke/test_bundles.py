@@ -11,26 +11,30 @@ import tempfile
 
 import jflows_md  # noqa: E402
 from jflows_md import Molecular_Bundle, available_bundles  # noqa: E402
+from jflows_md.core.builder import normalize_amber_transcript  # noqa: E402
 from jflows_md.system import sha256_file  # noqa: E402
 
 
 EXPECTED = {
-    "fab_adp_ff96_obc1_v2": ("C6H12N2O2", 22, 60, 42, 18),
-    "glycerol_gaff2_am1bcc_obc1_v2": ("C3H8O3", 14, 36, 25, 11),
-    "diethanolamine_neutral_gaff2_am1bcc_obc1_v2": ("C4H11NO2", 18, 48, 33, 15),
+    "adp_ff96_obc1": ("C6H12N2O2", 22, 60, 42, 18),
+    "glycerol_gaff2_am1bcc_obc1": ("C3H8O3", 14, 36, 25, 11),
+    "diethanolamine_gaff2_am1bcc_obc1": ("C4H11NO2", 18, 48, 33, 15),
 }
 
 EXPECTED_LINEAGE = {
-    "fab_adp_ff96_obc1_v2": {
-        "manifest": "8555616ebf85b83c47635eae2a3a8ecb4d03e8622e80257dd1d4d5ecad2155f1",
+    "adp_ff96_obc1": {
+        "manifest": "c21fcdc3a74ae68ff50e1e23ac30080963debcacbec2183e8fc32cc9ffcd16e4",
+        "source_bundle": "fab_adp_ff96_obc1_v1",
         "source_manifest": "26f71aa4fb696e3f9641db1e32253ca3093063fb2efa48d46fefe0eb3e636744",
     },
-    "glycerol_gaff2_am1bcc_obc1_v2": {
-        "manifest": "c60f520ef8d4146a0ffb4ff8875d56b90abebd47630d842780e7b3d71911c736",
+    "glycerol_gaff2_am1bcc_obc1": {
+        "manifest": "d6469e1cf0c43bf0fe1b0d0c63d0e2b57167ea4e0a16b90157958f85bf8e6e3d",
+        "source_bundle": "glycerol_gaff2_am1bcc_obc1_v1",
         "source_manifest": "3a7fb6c95dba2fc20abf71ddde58c5dd5b10bc562dc0ea32f8969470f70afe95",
     },
-    "diethanolamine_neutral_gaff2_am1bcc_obc1_v2": {
-        "manifest": "2af005fdb95bf060f5973fddf6825eb7c8d7fe3cb2d05a2203ef7deb5cdbc367",
+    "diethanolamine_gaff2_am1bcc_obc1": {
+        "manifest": "178a508261d2d37269ea892f78a1bd52b07d2de36b0bf1606911989b9115a029",
+        "source_bundle": "diethanolamine_neutral_gaff2_am1bcc_obc1_v1",
         "source_manifest": "617049504f0f8e4834a986a69c294deb2ee558d197976f22786b19d13a6191e8",
     },
 }
@@ -148,6 +152,9 @@ def check_verifier_closure(source: Path) -> None:
 
 
 def main() -> None:
+    assert normalize_amber_transcript(
+        "Running: /opt/amber/bin/antechamber\n\n", Path("/opt/amber")
+    ) == "Running: <AMBERHOME>/bin/antechamber\n"
     expected_public = {
         "Mixed_Identity",
         "Mixed_NSF",
@@ -171,6 +178,15 @@ def main() -> None:
 
     names = set(available_bundles())
     assert names == set(EXPECTED), (names, set(EXPECTED))
+    legacy_aliases = {
+        "fab_adp_ff96_obc1_v2": "adp_ff96_obc1",
+        "glycerol_gaff2_am1bcc_obc1_v2": "glycerol_gaff2_am1bcc_obc1",
+        "diethanolamine_neutral_gaff2_am1bcc_obc1_v2": (
+            "diethanolamine_gaff2_am1bcc_obc1"
+        ),
+    }
+    for legacy, current in legacy_aliases.items():
+        assert Molecular_Bundle.load(legacy).name == current
     for name, (formula, atoms, dimension, euclidean, periodic) in EXPECTED.items():
         bundle = Molecular_Bundle.load(name, verify=True)
         assert bundle.system["formula"] == formula
@@ -184,7 +200,7 @@ def main() -> None:
         upgrade = json.loads(
             (bundle.path / "provenance/coordinate_measure_upgrade.json").read_text()
         )
-        assert upgrade["source_bundle"] == name.removesuffix("_v2") + "_v1"
+        assert upgrade["source_bundle"] == EXPECTED_LINEAGE[name]["source_bundle"]
         assert (
             upgrade["source_manifest_sha256"]
             == EXPECTED_LINEAGE[name]["source_manifest"]
@@ -197,7 +213,7 @@ def main() -> None:
         assert min(bundle.system["gb_scaled_offset_radius_nm"]) > 0
         assert len(bundle.validation["frames_nm"]) == 4
         assert len(bundle.validation["forces_kj_mol_nm"]) == 4
-        if name == "fab_adp_ff96_obc1_v2":
+        if name == "adp_ff96_obc1":
             assert (
                 sha256_file(bundle.path / "system.prmtop")
                 == "2ce81216c7e18fd4d354fac44e22ba3843d89e297884bd6389a4cd57c74ecf6e"
@@ -206,12 +222,21 @@ def main() -> None:
             assert bundle.coordinates["chirality_sign"] == 1
         else:
             assert bundle.coordinates["chiral_torsion_index"] == -1
-            text = (bundle.path / "provenance/tleap.stdout").read_text()
-            assert "Exiting LEaP: Errors = 0; Warnings = 0; Notes = 0." in text
+            for relative in (
+                "provenance/antechamber.stdout",
+                "provenance/leap.transcript",
+                "provenance/tleap.stdout",
+            ):
+                text = (bundle.path / relative).read_text()
+                assert "<AMBERHOME>" in text
+                assert "/home/" not in text and "conda" not in text.lower()
+                assert text.endswith("\n") and not text.endswith("\n\n")
+            leap_text = (bundle.path / "provenance/tleap.stdout").read_text()
+            assert "Exiting LEaP: Errors = 0; Warnings = 0; Notes = 0." in leap_text
         print(f"PASS bundle {name}")
 
     check_verifier_closure(
-        Molecular_Bundle.load("glycerol_gaff2_am1bcc_obc1_v2").path
+        Molecular_Bundle.load("glycerol_gaff2_am1bcc_obc1").path
     )
 
     # A self-consistent rewrite of a built-in seed is still a different target
@@ -221,7 +246,7 @@ def main() -> None:
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary) / "bundles"
         root.mkdir()
-        name = "glycerol_gaff2_am1bcc_obc1_v2"
+        name = "glycerol_gaff2_am1bcc_obc1"
         shutil.copytree(Molecular_Bundle.load(name).path, root / name)
         seed = root / name / "provenance/input.mol2"
         seed.write_text(seed.read_text() + "\n", encoding="utf-8")

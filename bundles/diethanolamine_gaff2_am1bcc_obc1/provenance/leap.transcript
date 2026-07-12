@@ -114,7 +114,7 @@ Log file: ./leap.log
 >> #	Load the general force field parameter set.
 >> #
 >> gaff = loadamberparams gaff2.dat
-Loading parameters: /home/xuda/miniconda3/envs/jflows/dat/leap/parm/gaff2.dat
+Loading parameters: <AMBERHOME>/dat/leap/parm/gaff2.dat
 Reading title:
 AMBER General Force Field for organic molecules (Version 2.2.20, March 2021)
 > 

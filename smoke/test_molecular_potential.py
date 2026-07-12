@@ -23,9 +23,9 @@ from jflows_md.system import Molecular_Bundle  # noqa: E402
 
 
 EXPECTED = {
-    "fab_adp_ff96_obc1_v2": (60, 42, 18),
-    "glycerol_gaff2_am1bcc_obc1_v2": (36, 25, 11),
-    "diethanolamine_neutral_gaff2_am1bcc_obc1_v2": (48, 33, 15),
+    "adp_ff96_obc1": (60, 42, 18),
+    "glycerol_gaff2_am1bcc_obc1": (36, 25, 11),
+    "diethanolamine_gaff2_am1bcc_obc1": (48, 33, 15),
 }
 
 
@@ -125,7 +125,7 @@ def main() -> None:
         )
 
     check_rigid_motion_quotient_jacobian(
-        Molecular_Bundle.load("glycerol_gaff2_am1bcc_obc1_v2")
+        Molecular_Bundle.load("glycerol_gaff2_am1bcc_obc1")
     )
     print("PASS rigid-motion-quotient BAT Jacobian")
 

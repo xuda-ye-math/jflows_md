@@ -88,7 +88,7 @@ def refresh_flow_hash(run: Path) -> None:
 
 
 def main() -> None:
-    target = Molecular_Potential.from_bundle("glycerol_gaff2_am1bcc_obc1_v2")
+    target = Molecular_Potential.from_bundle("glycerol_gaff2_am1bcc_obc1")
     flow_key = jax.random.key(80)
     default_flow = Mixed_NSF(
         flow_key,
@@ -137,6 +137,44 @@ def main() -> None:
         np.testing.assert_allclose(
             actual_inverse_ladj, expected_inverse_ladj, rtol=0, atol=0
         )
+
+        legacy_name = root / "legacy_name"
+        write_run(
+            legacy_name,
+            target,
+            tanh_flow,
+            flow_key,
+            schema_version=2,
+            overrides={
+                "bundle": "glycerol_gaff2_am1bcc_obc1_v2",
+                "manifest_sha256": (
+                    "c60f520ef8d4146a0ffb4ff8875d56b90abebd47630d842780e7b3d71911c736"
+                ),
+                "jflows_md_source_sha256": (
+                    "11c26e119d9f7d19bbe04444da56c3577ed32abad0477749406c75d35a0a618c"
+                ),
+            },
+        )
+        migrated_target, migrated_flows = load_mixed_flow_stages(legacy_name)
+        assert migrated_target.bundle_name == "glycerol_gaff2_am1bcc_obc1"
+        assert eqx.tree_equal(tanh_flow, migrated_flows[0])
+
+        forged_legacy = root / "forged_legacy"
+        write_run(
+            forged_legacy,
+            target,
+            tanh_flow,
+            flow_key,
+            schema_version=2,
+            overrides={
+                "bundle": "glycerol_gaff2_am1bcc_obc1_v2",
+                "manifest_sha256": (
+                    "c60f520ef8d4146a0ffb4ff8875d56b90abebd47630d842780e7b3d71911c736"
+                ),
+                "jflows_md_source_sha256": "0" * 64,
+            },
+        )
+        expect_rejected(forged_legacy, "source hashes do not match")
 
         metadata = mixed_flow_metadata(tanh_flow)
         wrong_mask = np.asarray(metadata["condition_mask"]).copy()

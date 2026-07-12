@@ -24,7 +24,7 @@ def energy_and_gradient(target, samples):
 
 def main() -> None:
     assert not jax.config.x64_enabled
-    target = Molecular_Potential.from_bundle("glycerol_gaff2_am1bcc_obc1_v2")
+    target = Molecular_Potential.from_bundle("glycerol_gaff2_am1bcc_obc1")
     reference = target.reference_internal()[None]
     samples = jnp.repeat(reference, 2, axis=0)
     assert samples.dtype == jnp.float32

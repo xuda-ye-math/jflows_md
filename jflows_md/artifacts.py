@@ -16,7 +16,7 @@ import numpy as np
 
 from .flow import Mixed_NSF
 from .potential import Molecular_Potential
-from .system import sha256_file
+from .system import _manifest_matches_bundle_name, sha256_file
 
 
 __all__ = [
@@ -29,6 +29,13 @@ __all__ = [
 _ACTIVATIONS = {
     "jax.nn.silu": jax.nn.silu,
     "jax.nn.tanh": jax.nn.tanh,
+}
+
+# Exact package digest at public commit deac775, immediately before the
+# reviewed bundle-name migration. It is accepted only together with a known
+# legacy bundle name and its old frozen manifest hash.
+_LEGACY_SCHEMA2_SOURCE_SHA256 = {
+    "11c26e119d9f7d19bbe04444da56c3577ed32abad0477749406c75d35a0a618c"
 }
 
 
@@ -196,10 +203,14 @@ def load_mixed_flow_stages(
         )
     if target is None:
         target = Molecular_Potential.from_bundle(bundle)
-    if target.manifest_sha256 != manifest_sha256:
+    manifest_matches = _manifest_matches_bundle_name(
+        bundle, manifest_sha256, target.bundle_name, target.manifest_sha256
+    )
+    if not manifest_matches:
         raise ValueError(
             "saved flow and molecular target use different bundle manifests"
         )
+    migrated_legacy_manifest = manifest_sha256 != target.manifest_sha256
     if verify:
         current_hashes = {
             "jflows": package_source_sha256("jflows"),
@@ -209,7 +220,13 @@ def load_mixed_flow_stages(
             "jflows": saved_jflows_hash,
             "jflows_md": saved_md_hash,
         }
-        if current_hashes != saved_hashes:
+        reviewed_name_migration = (
+            schema_version == 2
+            and migrated_legacy_manifest
+            and saved_hashes["jflows"] == current_hashes["jflows"]
+            and saved_hashes["jflows_md"] in _LEGACY_SCHEMA2_SOURCE_SHA256
+        )
+        if current_hashes != saved_hashes and not reviewed_name_migration:
             raise ValueError(
                 "saved flow source hashes do not match the imported packages: "
                 f"saved={saved_hashes}, current={current_hashes}"

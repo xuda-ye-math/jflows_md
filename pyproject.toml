@@ -35,6 +35,13 @@ dependencies = [
     "numpy>=2.0.0",
 ]
 
+[project.optional-dependencies]
+bundles = [
+    "openmm>=8.5.0",
+    "parmed>=4.3.1",
+    "ambertools-unofficial>=26.0.0",
+]
+
 [project.urls]
 Homepage = "https://github.com/xuda-ye-math/jflows_md"
 Repository = "https://github.com/xuda-ye-math/jflows_md"

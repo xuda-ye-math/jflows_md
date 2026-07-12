@@ -17,18 +17,20 @@ Install both editable packages as described in the root README first.
 from __future__ import annotations
 
 import argparse
+import importlib.metadata as metadata
 import json
 import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 
 
 MOLECULAR_ROOT = Path(__file__).resolve().parents[1]
 
-from jflows_md.core.builder import write_bundle  # noqa: E402
+from jflows_md.core.builder import normalize_amber_transcript, write_bundle  # noqa: E402
 from jflows_md.system import (  # noqa: E402
     Molecular_Bundle,
     _FROZEN_BUNDLE_MANIFEST_SHA256,
@@ -84,11 +86,53 @@ def amber_data_hashes(prefix: Path) -> dict[str, str]:
     return {name: sha256_file(path) for name, path in paths.items()}
 
 
-def ambertools_version(prefix: Path) -> str:
-    records = sorted((prefix / "conda-meta").glob("ambertools-*.json"))
-    if not records:
-        raise FileNotFoundError("cannot identify the installed AmberTools package")
-    return str(json.loads(records[-1].read_text())["version"])
+def ambertools_prefix() -> Path:
+    """Locate an optional AmberTools installation through AMBERHOME or PATH."""
+    amberhome = os.environ.get("AMBERHOME")
+    if amberhome:
+        candidates = [Path(amberhome).expanduser().resolve()]
+    else:
+        executables = {
+            name: shutil.which(name) for name in ("antechamber", "parmchk2", "tleap")
+        }
+        if any(path is None for path in executables.values()):
+            raise RuntimeError(
+                "small-molecule rebuilding requires an optional AmberTools "
+                "installation exposed through AMBERHOME or PATH"
+            )
+        candidates = [
+            Path(path).resolve().parent.parent
+            for path in executables.values()
+            if path is not None
+        ]
+    prefix = candidates[0]
+    if any(candidate != prefix for candidate in candidates):
+        raise RuntimeError("AmberTools executables resolve to different prefixes")
+    missing = [
+        name
+        for name in ("antechamber", "parmchk2", "tleap")
+        if not (prefix / "bin" / name).is_file()
+    ]
+    if missing:
+        raise RuntimeError(
+            f"AmberTools prefix {prefix} is missing executables: {missing}"
+        )
+    return prefix
+
+
+def ambertools_unofficial_version(prefix: Path) -> str:
+    """Return the active optional wheel version for a newly versioned bundle."""
+    if prefix != Path(sys.prefix).resolve():
+        raise RuntimeError(
+            "new-bundle mode requires ambertools-unofficial in the active "
+            "Python environment"
+        )
+    try:
+        return metadata.version("ambertools-unofficial")
+    except metadata.PackageNotFoundError as error:
+        raise RuntimeError(
+            "new-bundle mode requires the optional jflows_md[bundles] extra"
+        ) from error
 
 
 def parameterize_small_molecule(
@@ -99,34 +143,32 @@ def parameterize_small_molecule(
     canonical_smiles: str,
     formula: str,
     diagnostic: str,
+    output: Path | None = None,
 ) -> Path:
-    prefix = Path(os.environ.get("CONDA_PREFIX", ""))
-    if not prefix or not (prefix / "bin/antechamber").is_file():
-        raise RuntimeError("run this builder inside the AmberTools-enabled jflows environment")
+    prefix = ambertools_prefix()
     frozen_record = json.loads(
         (source_mol2.parent / "build_record.json").read_text(encoding="utf-8")
     )
     hashes = amber_data_hashes(prefix)
-    version = ambertools_version(prefix)
-    expected_toolchain = {
-        "ambertools_version": frozen_record["ambertools_version"],
-        "amber_data_sha256": frozen_record["amber_data_sha256"],
-    }
-    actual_toolchain = {
-        "ambertools_version": version,
-        "amber_data_sha256": hashes,
-    }
-    if actual_toolchain != expected_toolchain:
-        raise ValueError(
-            "AmberTools installation differs from the frozen bundle toolchain; "
-            f"a changed build requires a new bundle version: "
-            f"{actual_toolchain} != {expected_toolchain}"
-        )
+    if output is None:
+        expected_hashes = frozen_record["amber_data_sha256"]
+        if hashes != expected_hashes:
+            raise ValueError(
+                "AmberTools data files differ from the frozen bundle toolchain; "
+                f"a changed build requires --name and --output: {hashes} != "
+                f"{expected_hashes}"
+            )
+        # The data hashes and exact candidate-manifest gate are authoritative.
+        # Preserve the recorded release label rather than depending on a
+        # specific environment manager's package metadata.
+        version = str(frozen_record["ambertools_version"])
+    else:
+        version = ambertools_unofficial_version(prefix)
     with tempfile.TemporaryDirectory(prefix=f"jflows_md_{name}_") as temporary:
         work = Path(temporary)
         shutil.copy2(source_mol2, work / "input.mol2")
         coordinate_upgrade = source_mol2.parent / "coordinate_measure_upgrade.json"
-        if coordinate_upgrade.is_file():
+        if output is None and coordinate_upgrade.is_file():
             shutil.copy2(coordinate_upgrade, work / coordinate_upgrade.name)
         run(
             [
@@ -181,6 +223,25 @@ quit
 """
         (work / "leap.in").write_text(leap_input, encoding="utf-8")
         run([str(prefix / "bin/tleap"), "-f", "leap.in"], work, "tleap.stdout")
+        # Provenance must not expose a workstation path or environment-manager
+        # layout. Preserve commands and data-file identities while replacing
+        # the installation prefix by a portable marker.
+        for filename in (
+            "antechamber.stdout",
+            "parmchk2.stdout",
+            "tleap.stdout",
+            "leap.log",
+            "sqm.in",
+            "sqm.out",
+        ):
+            transcript = work / filename
+            if transcript.is_file():
+                transcript.write_text(
+                    normalize_amber_transcript(
+                        transcript.read_text(errors="replace"), prefix
+                    ),
+                    encoding="utf-8",
+                )
         # LEaP writes the wall-clock time into the otherwise deterministic
         # prmtop. Normalize only that nonphysical header so bundle hashes are
         # stable across identical rebuilds.
@@ -280,11 +341,18 @@ quit
             minimize=True,
             provenance_files=provenance,
         )
-        return verify_frozen_rebuild(candidate, bundle_name)
+        if output is None:
+            return verify_frozen_rebuild(candidate, bundle_name)
+        destination = output.expanduser().resolve()
+        if destination.exists():
+            raise FileExistsError(f"new bundle output already exists: {destination}")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(candidate, destination)
+        return Molecular_Bundle.load(destination, verify=True).path
 
 
 def build_adp() -> Path:
-    name = "fab_adp_ff96_obc1_v2"
+    name = "adp_ff96_obc1"
     seed = bundle_seed(name)
     # Build from staged bundle-contained seeds without modifying the source.
     with tempfile.TemporaryDirectory(prefix="jflows_md_adp_") as temporary:
@@ -337,42 +405,62 @@ def build_adp() -> Path:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--only", choices=("adp", "glycerol", "diethanolamine"))
+    parser.add_argument(
+        "--name",
+        help="new small-molecule bundle name; requires --only and --output",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="new small-molecule bundle directory; requires --name",
+    )
     args = parser.parse_args()
+    if (args.name is None) != (args.output is None):
+        parser.error("--name and --output must be supplied together")
+    if args.name is not None:
+        if args.only not in ("glycerol", "diethanolamine"):
+            parser.error("new-bundle mode requires --only glycerol or diethanolamine")
+        if args.name in _FROZEN_BUNDLE_MANIFEST_SHA256:
+            parser.error("new-bundle mode cannot overwrite a frozen built-in name")
     outputs = []
     if args.only in (None, "adp"):
         outputs.append(build_adp())
     if args.only in (None, "glycerol"):
-        name = "glycerol_gaff2_am1bcc_obc1_v2"
+        seed_name = "glycerol_gaff2_am1bcc_obc1"
+        name = args.name if args.only == "glycerol" and args.name else seed_name
         outputs.append(
             parameterize_small_molecule(
                 name="glycerol",
                 source_mol2=(
-                    bundle_seed(name)
+                    bundle_seed(seed_name)
                     / "provenance/input.mol2"
                 ),
                 bundle_name=name,
                 canonical_smiles="OCC(O)CO",
                 formula="C3H8O3",
                 diagnostic="full support; both central-carbon determinant signs",
+                output=args.output if args.only == "glycerol" else None,
             )
         )
     if args.only in (None, "diethanolamine"):
-        name = "diethanolamine_neutral_gaff2_am1bcc_obc1_v2"
+        seed_name = "diethanolamine_gaff2_am1bcc_obc1"
+        name = args.name if args.only == "diethanolamine" and args.name else seed_name
         outputs.append(
             parameterize_small_molecule(
                 name="diethanolamine",
                 source_mol2=(
-                    bundle_seed(name)
+                    bundle_seed(seed_name)
                     / "provenance/input.mol2"
                 ),
                 bundle_name=name,
                 canonical_smiles="OCCNCCO",
                 formula="C4H11NO2",
                 diagnostic="neutral microstate; both nitrogen-pyramid signs",
+                output=args.output if args.only == "diethanolamine" else None,
             )
         )
     for output in outputs:
-        print(f"verified frozen rebuild {output}")
+        print(f"bundle ready {output}")
 
 
 if __name__ == "__main__":
