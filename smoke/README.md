@@ -25,10 +25,15 @@ counts), and the default float32 runtime. Bundle tests enforce complete
 hash/path closure, frozen built-in manifests and lineage, and consistent
 quotient-measure metadata. A bounded two-particle
 glycerol test compiles the real energy/gradient and one MALA step. A tiny
-synthetic `R^2 x T^1` case compiles and runs the
-mixed KL+X trainer, one adaptive Boltzmann-generator stage, and the G-native
-score-free AIS surrogate through a nonidentity mixed flow; it does
-not launch a molecular training run.
+synthetic `R^2 x T^1` case compiles and runs mixed KL+X and KL+X+X trainers,
+sparse full-validation checkpoint selection, positive-melt quench-and-temper,
+one adaptive Boltzmann-generator stage, and the G-native score-free AIS
+surrogate through a nonidentity mixed flow. Focused controller regressions
+prove the legacy no-selection warm start and trained-on-tie rule, and show that
+a finite intermediate checkpoint rescues a nonfinite final flow. The float32
+trainer smoke verifies post-update snapshot indexing and equality of the final
+snapshot with the returned trained flow. None of these launches a molecular
+training run.
 
 Rebuild the bundles only when their versioned model definition changes:
 
@@ -84,10 +89,9 @@ timing starts before source-particle construction and ends only after the
 public trainer result is synchronized, so it includes sampler/data
 construction and compilation plus execution of the optimizer kernel. Warm
 calls repeat the complete public path and synchronize before recording time.
-The CSV also records process peak host RSS, backend-reported peak GPU bytes in
-use/reserved, and `JAX_DISABLE_MOST_OPTIMIZATIONS` when that option is supplied
-in the launch environment. Use repeatable `--workload` arguments to select
-individual workloads; `--help` lists their exact names.
+The CSV also records process peak host RSS and backend-reported peak GPU bytes
+in use/reserved. Use repeatable `--workload` arguments to select individual
+workloads; `--help` lists their exact names.
 
 `compile_benchmark.csv` is a local generated artifact rather than a distributed
 baseline: timings depend on the exact package revision, JAX/XLA build, cache,

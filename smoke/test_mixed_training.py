@@ -19,6 +19,7 @@ from jflows.potential import Potential  # noqa: E402
 from jflows_md.boltzmann import (  # noqa: E402
     _operation_key,
     molecular_boltzmann_forward_KLX_G,
+    molecular_boltzmann_forward_KLXX_G,
 )
 from jflows_md.core.domain import Mixed_Domain  # noqa: E402
 from jflows_md.flow import Mixed_NSF  # noqa: E402
@@ -83,6 +84,7 @@ def main() -> None:
         mc_step=1e-3,
         mc_iters=1,
         coeff_lambda=1.0,
+        selection_steps=(1, 2),
         bg_param={
             "t_safe": 1.0,
             "tau_smc": 0.0,
@@ -105,6 +107,19 @@ def main() -> None:
     assert 0.0 < stages[0]["identity_ess"] <= 1.0
     assert stages[0]["selected"] in ("trained", "identity")
     assert stages[0]["ess_history"].shape == (2,)
+    assert stages[0]["ratio_history"].shape == (2,)
+    assert tuple(map(int, stages[0]["checkpoint_steps"])) == (-1, 0, 1, 2)
+    assert tuple(stages[0]["checkpoint_labels"]) == (
+        "identity",
+        "warm_start",
+        "checkpoint",
+        "final",
+    )
+    assert stages[0]["checkpoint_ess"].shape == (4,)
+    assert stages[0]["selected_step"] in (-1, 0, 1, 2)
+    assert abs(
+        stages[0]["ess"] - float(jnp.max(stages[0]["checkpoint_ess"]))
+    ) < 1e-12
     assert stages[0]["kept_history"].shape == (2,)
     assert stages[0]["update_history"].shape == (2,)
     assert stages[0]["smc_ess"].shape == (2,)
@@ -116,6 +131,57 @@ def main() -> None:
     )
     leaves = eqx.filter(stages[0]["flow"], eqx.is_inexact_array)
     assert all(bool(jnp.isfinite(leaf).all()) for leaf in jax.tree.leaves(leaves))
+
+    klxx_flow = Mixed_NSF(
+        jax.random.key(305),
+        domain,
+        bins=4,
+        transforms=2,
+        hidden_features=(8, 8),
+    ).zeros()
+    klxx_particles, klxx_stages = molecular_boltzmann_forward_KLXX_G(
+        x_valid,
+        source,
+        target,
+        klxx_flow,
+        n_pool=16,
+        n_batch=8,
+        steps=2,
+        lr=1e-3,
+        ladder=2,
+        mc_step=1e-3,
+        mc_iters=1,
+        melt=0.1,
+        opt_step=1e-2,
+        opt_iters=2,
+        coeff_lambda=1.0,
+        coeff_alpha=0.5,
+        coeff_beta=0.5,
+        bg_param={
+            "t_safe": 1.0,
+            "tau_smc": 0.0,
+            "tau_ess": 0.0,
+            "max_stages": 1,
+            "max_retry": 1,
+        },
+        e_clip=1000.0,
+        g_clip=100.0,
+        lr_warmup=2,
+        selection_steps=(1, 2),
+        seed=306,
+    )
+    jax.block_until_ready(klxx_particles)
+    assert klxx_particles.shape == x_valid.shape
+    assert bool(jnp.isfinite(klxx_particles).all())
+    assert len(klxx_stages) == 1 and klxx_stages[0]["t"] == 1.0
+    assert klxx_stages[0]["objective"] == "klxx"
+    assert tuple(map(int, klxx_stages[0]["checkpoint_steps"])) == (-1, 0, 1, 2)
+    assert abs(
+        klxx_stages[0]["ess"]
+        - float(jnp.max(klxx_stages[0]["checkpoint_ess"]))
+    ) < 1e-12
+    assert klxx_stages[0]["hat_mala_acceptance"].shape == (1,)
+    assert bool(jnp.isfinite(klxx_stages[0]["ess_history"]).all())
 
     ais_flow = Mixed_NSF(
         jax.random.key(303),

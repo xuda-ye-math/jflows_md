@@ -18,10 +18,21 @@ from jflows.flow import (  # noqa: E402
     MonotonicRQSTransform,
     Transform,
 )
-from jflows_md import Molecular_Potential, Molecular_Source  # noqa: E402
-from jflows_md.boltzmann import molecular_boltzmann_forward_KLX_G  # noqa: E402
+from jflows.train import Monitor  # noqa: E402
+from jflows_md import (  # noqa: E402
+    Molecular_Monitor,
+    Molecular_Potential,
+    Molecular_Source,
+)
+from jflows_md.boltzmann import (  # noqa: E402
+    molecular_boltzmann_forward_KLX_G,
+    molecular_boltzmann_forward_KLXX_G,
+)
 from jflows_md.core.domain import Mixed_Domain  # noqa: E402
-from jflows_md.train import train_molecular_forward_KLX_G  # noqa: E402
+from jflows_md.train import (  # noqa: E402
+    train_molecular_forward_KLX_G,
+    train_molecular_forward_KLXX_G,
+)
 
 
 def expect_value_error(fn) -> None:
@@ -41,6 +52,13 @@ def main() -> None:
     ))
     assert "checkpoint" in inspect.signature(train_molecular_forward_KLX_G).parameters
     assert "checkpoint" in inspect.signature(molecular_boltzmann_forward_KLX_G).parameters
+    assert "checkpoint" in inspect.signature(train_molecular_forward_KLXX_G).parameters
+    assert "checkpoint" in inspect.signature(molecular_boltzmann_forward_KLXX_G).parameters
+    assert "snapshot_steps" in inspect.signature(train_molecular_forward_KLX_G).parameters
+    assert "snapshot_steps" in inspect.signature(train_molecular_forward_KLXX_G).parameters
+    assert "selection_steps" in inspect.signature(molecular_boltzmann_forward_KLX_G).parameters
+    assert "selection_steps" in inspect.signature(molecular_boltzmann_forward_KLXX_G).parameters
+    assert issubclass(Molecular_Monitor, Monitor)
 
     domain = Mixed_Domain(2, 1)
     source = Molecular_Source(domain)

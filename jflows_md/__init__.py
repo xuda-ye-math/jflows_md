@@ -14,6 +14,7 @@ __all__ = [
     "Mixed_Identity",
     "Mixed_NSF",
     "Molecular_Bundle",
+    "Molecular_Monitor",
     "Molecular_Potential",
     "Molecular_Source",
     "annealed_importance_sampling",
@@ -21,10 +22,13 @@ __all__ = [
     "load_mixed_flow_stages",
     "mixed_flow_metadata",
     "mixed_mala",
+    "mixed_quench_and_temper",
     "molecular_boltzmann_forward_KLX_G",
+    "molecular_boltzmann_forward_KLXX_G",
     "potential_space_smc",
     "sequential_monte_carlo",
     "train_molecular_forward_KLX_G",
+    "train_molecular_forward_KLXX_G",
     "package_source_sha256",
 ]
 
@@ -33,6 +37,7 @@ _EXPORTS = {
     "Mixed_Identity": (".flow", "Mixed_Identity"),
     "Mixed_NSF": (".flow", "Mixed_NSF"),
     "Molecular_Bundle": (".system", "Molecular_Bundle"),
+    "Molecular_Monitor": (".train", "Molecular_Monitor"),
     "Molecular_Potential": (".potential", "Molecular_Potential"),
     "Molecular_Source": (".source", "Molecular_Source"),
     "annealed_importance_sampling": (
@@ -43,15 +48,24 @@ _EXPORTS = {
     "load_mixed_flow_stages": (".artifacts", "load_mixed_flow_stages"),
     "mixed_flow_metadata": (".artifacts", "mixed_flow_metadata"),
     "mixed_mala": (".utils", "mixed_mala"),
+    "mixed_quench_and_temper": (".utils", "mixed_quench_and_temper"),
     "molecular_boltzmann_forward_KLX_G": (
         ".boltzmann",
         "molecular_boltzmann_forward_KLX_G",
+    ),
+    "molecular_boltzmann_forward_KLXX_G": (
+        ".boltzmann",
+        "molecular_boltzmann_forward_KLXX_G",
     ),
     "potential_space_smc": (".utils", "potential_space_smc"),
     "sequential_monte_carlo": (".utils", "sequential_monte_carlo"),
     "train_molecular_forward_KLX_G": (
         ".train",
         "train_molecular_forward_KLX_G",
+    ),
+    "train_molecular_forward_KLXX_G": (
+        ".train",
+        "train_molecular_forward_KLXX_G",
     ),
     "package_source_sha256": (".artifacts", "package_source_sha256"),
 }

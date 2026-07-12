@@ -24,9 +24,12 @@ JAX and Equinox.
 - **Molecular sampling.** Mixed-domain MALA, potential-space SMC, and the
   G-native score-free AIS surrogate use the same `ladder`, `step`, `iters`,
   and `chunk` conventions as `jflows`.
-- **Boltzmann-generator training.** The molecular forward KL+X trainer and
-  adaptive controller use `e_clip` as an optimizer screen, `g_clip` as global
-  gradient clipping, and MALA by default. No sharpening is part of the target.
+- **Boltzmann-generator training.** Molecular forward KL, KL+X, and KL+X+X
+  trainers share the adaptive controller, optimizer-only `e_clip`, global
+  `g_clip`, honest proposal-side stage ESS, fixed-checkpoint flow selection,
+  and MALA. The live target-pool ratio moment is deliberately labeled
+  separately from stage ESS. KL+X+X adds a mixed-domain quench-and-temper
+  coverage pool. No sharpening is part of the target.
 - **Public compatibility boundary.** `jflows_md` imports only public `jflows`
   interfaces. Low-level coordinate, force-field, chirality, and spline code
   stays under `jflows_md.core`.
@@ -186,11 +189,14 @@ The public modules mirror the organization of `jflows`:
 - `jflows_md.potential`: `Molecular_Potential`
 - `jflows_md.source`: `Molecular_Source`
 - `jflows_md.system`: `Molecular_Bundle`, `available_bundles`
-- `jflows_md.train`: `train_molecular_forward_KLX_G`
-- `jflows_md.boltzmann`: `molecular_boltzmann_forward_KLX_G`
+- `jflows_md.train`: `Molecular_Monitor`,
+  `train_molecular_forward_KLX_G`, `train_molecular_forward_KLXX_G`
+- `jflows_md.boltzmann`: `molecular_boltzmann_forward_KLX_G`,
+  `molecular_boltzmann_forward_KLXX_G`
 - `jflows_md.artifacts`: exact flow-architecture metadata, source hashing, and
   verified stage loading
-- `jflows_md.utils`: mixed MALA, potential-space SMC, and G-native AIS
+- `jflows_md.utils`: mixed MALA, mixed quench-and-temper, potential-space SMC,
+  and G-native AIS
 
 Frequently used objects are lazily exposed directly from `jflows_md`. User
 programs should not depend on `jflows_md.core`.
@@ -200,6 +206,17 @@ target and `G = F^{-1}` maps target to source. Molecular forward training fixes
 the flow as `G`, so its public driver and AIS surrogate do not accept a
 direction string. Increasing `chunk` means more sequential row partitions and
 therefore fewer physical samples in each compiled molecular call.
+
+`selection_steps` is an optional sparse schedule of post-update flow snapshots
+used by the full-validation stage ESS gate. When enabled, the gate also tests
+exact identity (reported as step -1), the accepted pre-update warm start (step
+0), and the final trained flow. Stage records expose `selected_checkpoint`,
+`selected_step`, `checkpoint_labels`, `checkpoint_steps`, and
+`checkpoint_ess`. Snapshot storage is proportional to the number of requested
+checkpoints times the flow size, each distinct static schedule compiles a
+separate trainer executable, and schedules are therefore limited to 32 sparse
+entries. The separate Boolean `checkpoint` argument means JAX backward-pass
+rematerialization; it does not save or select flow snapshots.
 
 Potential-space SMC is classical: every ladder level rejuvenates at its
 matching intermediate potential. Flow-proposal AIS instead applies fractional

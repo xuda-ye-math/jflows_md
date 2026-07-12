@@ -159,6 +159,7 @@ def main() -> None:
         "Mixed_Identity",
         "Mixed_NSF",
         "Molecular_Bundle",
+        "Molecular_Monitor",
         "Molecular_Potential",
         "Molecular_Source",
         "annealed_importance_sampling",
@@ -166,11 +167,14 @@ def main() -> None:
         "load_mixed_flow_stages",
         "mixed_flow_metadata",
         "mixed_mala",
+        "mixed_quench_and_temper",
         "molecular_boltzmann_forward_KLX_G",
+        "molecular_boltzmann_forward_KLXX_G",
         "potential_space_smc",
         "package_source_sha256",
         "sequential_monte_carlo",
         "train_molecular_forward_KLX_G",
+        "train_molecular_forward_KLXX_G",
     }
     assert set(jflows_md.__all__) == expected_public
     for private_name in ("Amber_OBC_Force_Field", "Internal_Coordinates", "Mixed_Domain"):

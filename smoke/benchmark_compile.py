@@ -131,7 +131,6 @@ CSV_FIELDS = (
     "device",
     "jax_version",
     "dtype",
-    "jax_disable_most_optimizations",
     "peak_host_rss_mb",
     "peak_gpu_in_use_mb",
     "peak_gpu_reserved_mb",
@@ -706,9 +705,6 @@ def _worker(cell: Cell, warm_repeats: int) -> dict[str, Any]:
         "device": getattr(device, "device_kind", str(device)),
         "jax_version": jax.__version__,
         "dtype": str(dtype),
-        "jax_disable_most_optimizations": os.environ.get(
-            "JAX_DISABLE_MOST_OPTIMIZATIONS", ""
-        ),
         "peak_host_rss_mb": f"{resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0:.3f}",
         "peak_gpu_in_use_mb": f"{memory.get('peak_bytes_in_use', 0) / 2**20:.3f}",
         "peak_gpu_reserved_mb": f"{memory.get('peak_bytes_reserved', 0) / 2**20:.3f}",

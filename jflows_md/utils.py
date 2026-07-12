@@ -17,7 +17,7 @@ from jax import Array
 from jax.scipy.special import logsumexp
 
 from jflows.potential import Potential, linear_combination
-from jflows.utils import compute_ESS_log, resample
+from jflows.utils import compute_ESS_log, lbfgs, resample
 
 from .core.domain import Mixed_Domain
 
@@ -27,6 +27,7 @@ __all__ = [
     "annealed_importance_sampling",
     "mixed_mala",
     "mixed_mala_step",
+    "mixed_quench_and_temper",
     "potential_space_smc",
     "sequential_monte_carlo",
     "smc",
@@ -229,6 +230,107 @@ def mixed_mala(
         for acceptance, size in zip(acceptances, sizes)
     )
     return jnp.concatenate(outputs, axis=0), weighted_acceptance
+
+
+@eqx.filter_jit
+def _mixed_lbfgs_chunk(
+    samples: Array,
+    potential,
+    domain: Mixed_Domain,
+    *,
+    step: float,
+    iters: int,
+) -> Array:
+    """Quench one fixed-shape mixed-domain chunk."""
+
+    quenched = lbfgs(
+        samples,
+        potential,
+        step=step,
+        iters=iters,
+        armijo=True,
+        chunk=1,
+    )
+    return domain.wrap(quenched)
+
+
+def mixed_quench_and_temper(
+    key: Array,
+    samples: Array,
+    potential,
+    domain: Mixed_Domain,
+    *,
+    melt: float = 0.0,
+    opt_step: float = 1e-2,
+    opt_iters: int = 100,
+    mc_step: float = 1e-3,
+    mc_iters: int = 100,
+    images: int = 3,
+    chunk: int = 1,
+) -> tuple[Array, Array]:
+    """Construct a mixed-domain quench-and-temper coverage pool.
+
+    The Euclidean block receives Gaussian melt noise.  When ``melt`` is
+    positive the periodic block is refreshed from its maximum-entropy uniform
+    law; with ``melt=0`` the supplied torsions are retained.  L-BFGS follows
+    the periodic extension of the potential and every chunk is wrapped before
+    exact mixed-domain MALA tempering.
+    """
+
+    _validate_rows_and_chunk(samples, chunk)
+    domain._validate(samples, "mixed quench-and-temper samples")
+    if not math.isfinite(melt) or melt < 0:
+        raise ValueError("melt must be nonnegative and finite")
+    if not math.isfinite(opt_step) or opt_step <= 0 or opt_iters < 1:
+        raise ValueError("opt_step and opt_iters must be positive")
+    if mc_iters < 1:
+        raise ValueError("mc_iters must be positive")
+    # Validate the wrapped proposal before compiling either expensive kernel.
+    error_bound = wrapped_normal_relative_error_bound(mc_step, images)
+    if error_bound > _WRAPPED_RELATIVE_TOLERANCE:
+        raise ValueError(
+            "wrapped-normal image truncation is not certified: "
+            f"relative bound {error_bound:.3e} exceeds "
+            f"{_WRAPPED_RELATIVE_TOLERANCE:.1e}"
+        )
+
+    melt_key, periodic_key, temper_key = jax.random.split(key, 3)
+    current = samples
+    if melt > 0:
+        euclidean = current[:, : domain.euclidean_dim]
+        euclidean = euclidean + melt * jax.random.normal(
+            melt_key, euclidean.shape, dtype=current.dtype
+        )
+        periodic = jax.random.uniform(
+            periodic_key,
+            (current.shape[0], domain.periodic_dim),
+            minval=-jnp.pi,
+            maxval=jnp.pi,
+            dtype=current.dtype,
+        )
+        current = jnp.concatenate((euclidean, periodic), axis=-1)
+
+    quenched = []
+    for part in jnp.array_split(current, chunk, axis=0):
+        value = _mixed_lbfgs_chunk(
+            part,
+            potential,
+            domain,
+            step=opt_step,
+            iters=opt_iters,
+        )
+        quenched.append(jax.block_until_ready(value))
+    current = jnp.concatenate(quenched, axis=0)
+    return mixed_mala(
+        temper_key,
+        current,
+        potential,
+        domain,
+        step=mc_step,
+        iters=mc_iters,
+        images=images,
+        chunk=chunk,
+    )
 
 
 @eqx.filter_jit

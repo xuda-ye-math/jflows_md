@@ -8,6 +8,7 @@ import os
 
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
+import equinox as eqx  # noqa: E402
 import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
 
@@ -42,22 +43,30 @@ def main() -> None:
         transforms=2,
         hidden_features=(8, 8),
     ).zeros()
-    trained, ess, kept, updated = train_molecular_forward_KLX_G(
+    trained, ess, kept, updated, snapshots = train_molecular_forward_KLX_G(
         samples,
         source,
         target,
         flow,
         n_batch=6,
-        steps=1,
+        steps=2,
         lr=1e-3,
         checkpoint=True,
         e_clip=1000.0,
         g_clip=100.0,
         seed=42,
+        snapshot_steps=(1, 2),
     )
     jax.block_until_ready((trained, ess, kept, updated))
     assert samples.dtype == jnp.float32 and ess.dtype == jnp.float32
-    assert ess.shape == kept.shape == updated.shape == (1,)
+    assert ess.shape == kept.shape == updated.shape == (2,)
+    assert len(snapshots) == 2
+    assert all(
+        leaf.dtype == jnp.float32
+        for leaf in jax.tree.leaves(snapshots[0])
+        if isinstance(leaf, jax.Array) and jnp.issubdtype(leaf.dtype, jnp.floating)
+    )
+    assert eqx.tree_equal(trained, snapshots[-1])
     assert bool(jnp.isfinite(ess).all() & jnp.isfinite(kept).all())
     assert bool(updated[0])
     assert all(
