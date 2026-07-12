@@ -9,6 +9,7 @@ import these utilities rather than maintaining separate sampler modules.
 from __future__ import annotations
 
 import math
+import operator
 
 import equinox as eqx
 import jax
@@ -38,6 +39,28 @@ __all__ = [
 _WRAPPED_RELATIVE_TOLERANCE = 1e-12
 
 
+def _integer(name: str, value, minimum: int) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer, not a boolean")
+    try:
+        result = operator.index(value)
+    except TypeError as exc:
+        raise ValueError(f"{name} must be an integer, got {value!r}") from exc
+    if result < minimum:
+        raise ValueError(f"{name} must be at least {minimum}, got {value!r}")
+    return result
+
+
+def _positive_real(name: str, value) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a real scalar, got {value!r}") from exc
+    if not math.isfinite(result) or result <= 0:
+        raise ValueError(f"{name} must be positive and finite, got {value!r}")
+    return result
+
+
 def wrapped_normal_relative_error_bound(step: float, images: int) -> float:
     """Certified relative tail bound for the truncated wrapped proposal.
 
@@ -46,9 +69,9 @@ def wrapped_normal_relative_error_bound(step: float, images: int) -> float:
     wrapped-normal sum uniformly over that interval.
     """
 
-    if step <= 0 or images < 1:
-        raise ValueError("step must be positive and images at least one")
-    variance = 2.0 * float(step)
+    step = _positive_real("step", step)
+    images = _integer("images", images, 1)
+    variance = 2.0 * step
     first_omitted = images + 1
     exponent = -(
         ((2 * first_omitted - 1) ** 2 - 1) * math.pi**2
@@ -103,6 +126,8 @@ def mixed_mala_step(
     torus seam.
     """
 
+    step = _positive_real("mixed_mala_step: step", step)
+    images = _integer("mixed_mala_step: images", images, 1)
     error_bound = wrapped_normal_relative_error_bound(step, images)
     if error_bound > _WRAPPED_RELATIVE_TOLERANCE:
         raise ValueError(
@@ -150,6 +175,9 @@ def _mixed_mala_chunk(
 ) -> tuple[Array, Array]:
     """Compile one fixed-shape MALA chunk; orchestration stays eager."""
 
+    step = _positive_real("_mixed_mala_chunk: step", step)
+    iters = _integer("_mixed_mala_chunk: iters", iters, 1)
+    images = _integer("_mixed_mala_chunk: images", images, 1)
     keys = jax.random.split(key, iters)
 
     def body(state, subkey):
@@ -161,11 +189,13 @@ def _mixed_mala_chunk(
     return jax.lax.scan(body, samples, keys)
 
 
-def _validate_rows_and_chunk(samples: Array, chunk: int) -> None:
+def _validate_rows_and_chunk(samples: Array, chunk: int) -> int:
     if samples.ndim != 2 or samples.shape[0] < 1:
         raise ValueError(f"samples must have shape [N, d] with N >= 1, got {samples.shape}")
-    if chunk < 1 or chunk > samples.shape[0]:
+    chunk = _integer("chunk", chunk, 1)
+    if chunk > samples.shape[0]:
         raise ValueError("chunk must lie in [1, sample count]")
+    return chunk
 
 
 def mixed_mala(
@@ -192,10 +222,11 @@ def mixed_mala(
     custom compiled calculation.
     """
 
-    _validate_rows_and_chunk(samples, chunk)
+    chunk = _validate_rows_and_chunk(samples, chunk)
     domain._validate(samples, "mixed MALA samples")
-    if iters < 1:
-        raise ValueError("iters must be positive")
+    step = _positive_real("mixed_mala: step", step)
+    iters = _integer("mixed_mala: iters", iters, 1)
+    images = _integer("mixed_mala: images", images, 1)
     # Fail before the first (potentially expensive) compilation.
     error_bound = wrapped_normal_relative_error_bound(step, images)
     if error_bound > _WRAPPED_RELATIVE_TOLERANCE:
@@ -277,14 +308,15 @@ def mixed_quench_and_temper(
     exact mixed-domain MALA tempering.
     """
 
-    _validate_rows_and_chunk(samples, chunk)
+    chunk = _validate_rows_and_chunk(samples, chunk)
     domain._validate(samples, "mixed quench-and-temper samples")
     if not math.isfinite(melt) or melt < 0:
         raise ValueError("melt must be nonnegative and finite")
-    if not math.isfinite(opt_step) or opt_step <= 0 or opt_iters < 1:
-        raise ValueError("opt_step and opt_iters must be positive")
-    if mc_iters < 1:
-        raise ValueError("mc_iters must be positive")
+    opt_step = _positive_real("opt_step", opt_step)
+    opt_iters = _integer("opt_iters", opt_iters, 1)
+    mc_step = _positive_real("mc_step", mc_step)
+    mc_iters = _integer("mc_iters", mc_iters, 1)
+    images = _integer("images", images, 1)
     # Validate the wrapped proposal before compiling either expensive kernel.
     error_bound = wrapped_normal_relative_error_bound(mc_step, images)
     if error_bound > _WRAPPED_RELATIVE_TOLERANCE:
@@ -355,16 +387,31 @@ def _chunked_bridge_log_weights(
     for part in jnp.array_split(samples, chunk, axis=0):
         value = _bridge_log_weight_chunk(part, source, target, coefficient)
         pieces.append(jax.block_until_ready(value))
-    value = jnp.concatenate(pieces, axis=0)
-    return jnp.where(jnp.isfinite(value), value, -jnp.inf)
+    return jnp.concatenate(pieces, axis=0)
 
 
 def _linear_weights(log_weight: Array) -> tuple[Array, bool]:
+    """Convert log weights safely and report whether the vector is usable."""
+
+    log_weight = jnp.asarray(log_weight)
+    if not jnp.issubdtype(log_weight.dtype, jnp.inexact):
+        log_weight = log_weight.astype(jnp.result_type(float))
+    has_nan = jnp.any(jnp.isnan(log_weight))
+    positive_infinity = jnp.isposinf(log_weight)
+    has_positive_infinity = jnp.any(positive_infinity)
     finite = jnp.isfinite(log_weight)
+    has_finite = jnp.any(finite)
     maximum = jnp.max(jnp.where(finite, log_weight, -jnp.inf))
-    weight = jnp.where(finite, jnp.exp(log_weight - maximum), 0.0)
+    regular = jnp.where(finite, jnp.exp(log_weight - maximum), 0.0)
+    weight = jnp.where(
+        has_positive_infinity,
+        positive_infinity.astype(log_weight.dtype),
+        regular,
+    )
+    valid = ~has_nan & (has_positive_infinity | has_finite)
+    weight = jnp.where(valid, weight, jnp.zeros_like(weight))
     weight = jax.block_until_ready(weight)
-    has_weight = bool(jnp.sum(weight) > 0)
+    has_weight = bool(valid & (jnp.sum(weight) > 0))
     return (weight if has_weight else jnp.ones_like(weight)), has_weight
 
 
@@ -381,9 +428,10 @@ def _potential_space_schedule(
     domain: Mixed_Domain | None,
     chunk: int,
 ) -> tuple[Array, Array, Array]:
-    _validate_rows_and_chunk(samples, chunk)
-    if iters < 1:
-        raise ValueError("iters must be positive")
+    chunk = _validate_rows_and_chunk(samples, chunk)
+    step = _positive_real("SMC step", step)
+    iters = _integer("SMC iters", iters, 1)
+    images = _integer("SMC images", images, 1)
     current = samples
     mala_domain = domain if domain is not None else getattr(target, "domain", None)
     if mala_domain is None:
@@ -445,8 +493,7 @@ def sequential_monte_carlo(
     with one physical chunk rather than ``ladder * chunk`` copies.
     """
 
-    if ladder < 1:
-        raise ValueError("ladder must be at least one")
+    ladder = _integer("ladder", ladder, 1)
     levels = tuple(level / ladder for level in range(1, ladder + 1))
     return _potential_space_schedule(
         key,
@@ -482,10 +529,13 @@ def potential_space_smc(
     bridge controlled by ``ladder``.
     """
 
-    levels = tuple(float(value) for value in t_list)
+    try:
+        levels = tuple(float(value) for value in t_list)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("t_list must contain real bridge levels") from exc
     if not levels:
         raise ValueError("t_list must contain at least one bridge level")
-    if any(not 0.0 < value <= 1.0 for value in levels) or any(
+    if any(not math.isfinite(value) or not 0.0 < value <= 1.0 for value in levels) or any(
         right <= left for left, right in zip(levels, levels[1:])
     ):
         raise ValueError("t_list must be strictly increasing in (0, 1]")
@@ -535,8 +585,7 @@ def _chunked_ais_log_weights(
             part, source, target, flow, coefficient
         )
         values.append(jax.block_until_ready(value))
-    value = jnp.concatenate(values, axis=0)
-    return jnp.where(jnp.isfinite(value), value, -jnp.inf)
+    return jnp.concatenate(values, axis=0)
 
 
 def annealed_importance_sampling(
@@ -567,9 +616,11 @@ def annealed_importance_sampling(
     target-rejuvenated training sampler is deliberately biased.
     """
 
-    if ladder < 1 or iters < 1:
-        raise ValueError("ladder must be at least one")
-    _validate_rows_and_chunk(samples, chunk)
+    ladder = _integer("ladder", ladder, 1)
+    iters = _integer("iters", iters, 1)
+    step = _positive_real("step", step)
+    images = _integer("images", images, 1)
+    chunk = _validate_rows_and_chunk(samples, chunk)
     mala_domain = domain
     if mala_domain is None:
         mala_domain = getattr(target, "domain", getattr(flow, "domain", None))

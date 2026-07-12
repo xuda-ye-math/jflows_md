@@ -14,6 +14,7 @@ TESTS = (
     "test_api_consistency.py",
     "test_artifacts.py",
     "test_jflows_compatibility.py",
+    "test_edge_cases.py",
     "test_mixed_nsf.py",
     "test_jflows_md_chunking.py",
     "test_float32_training.py",

@@ -27,9 +27,12 @@ JAX and Equinox.
 - **Boltzmann-generator training.** Molecular forward KL, KL+X, and KL+X+X
   trainers share the adaptive controller, optimizer-only `e_clip`, global
   `g_clip`, honest proposal-side stage ESS, fixed-checkpoint flow selection,
-  and MALA. The live target-pool ratio moment is deliberately labeled
-  separately from stage ESS. KL+X+X adds a mixed-domain quench-and-temper
-  coverage pool. No sharpening is part of the target.
+  and MALA. Masked losses use finite-safe selection, gradient clipping remains
+  stable when a float32 sum of squares overflows, and an Adam update is
+  committed atomically only when its loss, gradients, moments, and resulting
+  parameters are finite. The live target-pool ratio moment is deliberately
+  labeled separately from stage ESS. KL+X+X adds a mixed-domain
+  quench-and-temper coverage pool. No sharpening is part of the target.
 - **Public compatibility boundary.** `jflows_md` imports only public `jflows`
   interfaces. Low-level coordinate, force-field, chirality, and spline code
   stays under `jflows_md.core`.
@@ -257,7 +260,8 @@ XLA_PYTHON_CLIENT_PREALLOCATE=false python smoke/run_all.py
 
 The suite covers bundle integrity, OpenMM energy/force parity, mixed-coordinate
 round trips and Jacobians, chirality support, spline seam behavior, float32
-execution, MALA/SMC/AIS, artifact loading, chunking, and public `jflows`
+execution, finite-safe optimizer and weight edge cases, pre-compilation
+validation, MALA/SMC/AIS, artifact loading, chunking, and public `jflows`
 compatibility. It does not launch production molecular training. See
 [`smoke/README.md`](smoke/README.md) for the opt-in compilation benchmark.
 

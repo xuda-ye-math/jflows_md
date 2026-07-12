@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import operator
 
 import equinox as eqx
 import jax
@@ -27,6 +28,28 @@ _BETA1, _BETA2, _EPS = 0.9, 0.999, 1e-8
 _MAX_SNAPSHOTS = 32
 
 
+def _integer(name: str, value, minimum: int = 1) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer, not a boolean")
+    try:
+        result = operator.index(value)
+    except TypeError as exc:
+        raise ValueError(f"{name} must be an integer, got {value!r}") from exc
+    if result < minimum:
+        raise ValueError(f"{name} must be at least {minimum}, got {value!r}")
+    return result
+
+
+def _screen(name: str, value) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a real scalar, got {value!r}") from exc
+    if math.isnan(result) or result < 0:
+        raise ValueError(f"{name} must be nonnegative")
+    return result
+
+
 class Molecular_Monitor(Monitor):
     """Report the target-pool ratio moment without calling it stage ESS.
 
@@ -44,13 +67,58 @@ class Molecular_Monitor(Monitor):
 
 
 def _clip_global(grads, ceiling: float):
-    norm = jnp.sqrt(sum(jnp.sum(jnp.square(leaf)) for leaf in jax.tree.leaves(grads)))
-    scale = jnp.minimum(1.0, ceiling / (norm + _EPS))
-    return jax.tree.map(lambda leaf: leaf * scale, grads)
+    """Finite-safe global L2 clipping with an overflow-stable fallback."""
+
+    clean = jax.tree.map(
+        lambda leaf: jnp.where(
+            jnp.isfinite(leaf), leaf, jnp.zeros_like(leaf)
+        ),
+        grads,
+    )
+    nonempty = [leaf for leaf in jax.tree.leaves(clean) if leaf.size > 0]
+    if not nonempty:
+        return clean
+
+    square = sum(jnp.sum(jnp.square(leaf)) for leaf in nonempty)
+    direct_norm = jnp.sqrt(square)
+    magnitude = jnp.max(
+        jnp.stack([jnp.max(jnp.abs(leaf)) for leaf in nonempty])
+    )
+
+    def scaled_leaf(leaf):
+        return jnp.where(
+            leaf != 0,
+            jnp.sign(leaf)
+            * jnp.exp(jnp.log(jnp.abs(leaf)) - jnp.log(magnitude)),
+            0.0,
+        )
+
+    scaled = jax.tree.map(scaled_leaf, clean)
+    scaled_nonempty = [
+        leaf for leaf in jax.tree.leaves(scaled) if leaf.size > 0
+    ]
+    scaled_norm = jnp.sqrt(
+        sum(jnp.sum(jnp.square(leaf)) for leaf in scaled_nonempty)
+    )
+    direct_factor = jnp.minimum(1.0, ceiling / (direct_norm + _EPS))
+    stable_factor = ceiling / (scaled_norm + _EPS)
+    log_norm = jnp.log(magnitude) + jnp.log(scaled_norm)
+    needs_stable_clip = log_norm > jnp.log(ceiling)
+    return jax.tree.map(
+        lambda leaf, normalized: jnp.where(
+            jnp.isfinite(direct_norm),
+            leaf * direct_factor,
+            jnp.where(needs_stable_clip, normalized * stable_factor, leaf),
+        ),
+        clean,
+        scaled,
+    )
 
 
 def _tree_all_finite(tree) -> Array:
     leaves = jax.tree.leaves(tree)
+    if not leaves:
+        return jnp.asarray(True)
     return jnp.all(jnp.stack([jnp.all(jnp.isfinite(leaf)) for leaf in leaves]))
 
 
@@ -67,6 +135,81 @@ def _step_learning_rate(lr: float, warmup: int, step_index: Array) -> Array:
         return jnp.asarray(lr)
     fraction = jnp.minimum(1.0, step_index.astype(jnp.asarray(lr).dtype) / warmup)
     return lr * fraction
+
+
+def _adam_step(
+    params,
+    first_moment,
+    second_moment,
+    grads,
+    loss: Array,
+    update_count: Array,
+    step_lr: Array,
+    g_clip: float,
+    eligible: Array,
+):
+    """Build and atomically commit one finite molecular Adam update.
+
+    A bad loss/gradient or an overflow produced while forming Adam moments or
+    parameters leaves the complete optimizer state unchanged. Consequently a
+    rejected step does not consume the bias-correction counter.
+    """
+
+    finite = jnp.asarray(eligible) & jnp.isfinite(loss) & _tree_all_finite(grads)
+    clean = jax.tree.map(
+        lambda grad: jnp.where(
+            jnp.isfinite(grad), grad, jnp.zeros_like(grad)
+        ),
+        grads,
+    )
+    if g_clip != float("inf"):
+        clean = _clip_global(clean, g_clip)
+
+    candidate_count = update_count + finite.astype(update_count.dtype)
+    bias_count = jnp.maximum(candidate_count, 1)
+    first_new = jax.tree.map(
+        lambda moment, grad: _BETA1 * moment + (1.0 - _BETA1) * grad,
+        first_moment,
+        clean,
+    )
+    second_new = jax.tree.map(
+        lambda moment, grad: _BETA2 * moment + (1.0 - _BETA2) * grad * grad,
+        second_moment,
+        clean,
+    )
+    first_hat = jax.tree.map(
+        lambda value: value
+        / (1.0 - _BETA1 ** bias_count.astype(value.dtype)),
+        first_new,
+    )
+    second_hat = jax.tree.map(
+        lambda value: value
+        / (1.0 - _BETA2 ** bias_count.astype(value.dtype)),
+        second_new,
+    )
+    params_new = jax.tree.map(
+        lambda value, first_value, second_value: value
+        - step_lr * first_value / (jnp.sqrt(second_value) + _EPS),
+        params,
+        first_hat,
+        second_hat,
+    )
+    commit = finite & _tree_all_finite((params_new, first_new, second_new))
+    params = jax.tree.map(
+        lambda new, old: jnp.where(commit, new, old), params_new, params
+    )
+    first_moment = jax.tree.map(
+        lambda new, old: jnp.where(commit, new, old),
+        first_new,
+        first_moment,
+    )
+    second_moment = jax.tree.map(
+        lambda new, old: jnp.where(commit, new, old),
+        second_new,
+        second_moment,
+    )
+    update_count = update_count + commit.astype(update_count.dtype)
+    return params, first_moment, second_moment, update_count, commit
 
 
 @eqx.filter_jit
@@ -103,14 +246,13 @@ def train_molecular_forward_KLX_G(
 
     if samples.ndim != 2 or samples.shape[0] < 1:
         raise ValueError(f"samples must have shape [N, d], got {samples.shape}")
-    if n_batch < 1 or steps < 1:
-        raise ValueError("n_batch and steps must be positive")
+    n_batch = _integer("n_batch", n_batch)
+    steps = _integer("steps", steps)
     if n_batch > samples.shape[0]:
         raise ValueError("n_batch cannot exceed the molecular sample pool")
     if not math.isfinite(lr) or lr <= 0:
         raise ValueError("lr must be positive and finite")
-    if lr_warmup < 0:
-        raise ValueError("lr_warmup must be nonnegative")
+    lr_warmup = _integer("lr_warmup", lr_warmup, minimum=0)
     if any(
         not isinstance(value, int)
         or isinstance(value, bool)
@@ -127,10 +269,8 @@ def train_molecular_forward_KLX_G(
         )
     if not math.isfinite(coeff_lambda) or coeff_lambda < 0:
         raise ValueError("coeff_lambda must be nonnegative and finite")
-    if math.isnan(e_clip) or e_clip < 0:
-        raise ValueError("e_clip must be nonnegative")
-    if math.isnan(g_clip) or g_clip <= 0:
-        raise ValueError("g_clip must be positive")
+    e_clip = _screen("e_clip", e_clip)
+    g_clip = _screen("g_clip", g_clip)
     key = jax.random.fold_in(jax.random.key(31), seed)
     params, static = eqx.partition(flow, eqx.is_inexact_array)
     m0 = jax.tree.map(jnp.zeros_like, params)
@@ -178,54 +318,18 @@ def train_molecular_forward_KLX_G(
             differentiated_loss, has_aux=True
         )(current)
         count = jnp.sum(keep)
-        update_applied = (
-            (count > 0) & jnp.isfinite(loss) & _tree_all_finite(grads)
-        )
-
-        def apply_update(state):
-            parameters, first, second, count_updates = state
-            count_updates = count_updates + 1
-            safe_grads = (
-                _clip_global(grads, g_clip)
-                if g_clip != float("inf")
-                else grads
+        current, first_moment, second_moment, update_count, update_applied = (
+            _adam_step(
+                current,
+                first_moment,
+                second_moment,
+                grads,
+                loss,
+                update_count,
+                _step_learning_rate(lr, lr_warmup, step_index),
+                g_clip,
+                count > 0,
             )
-            first = jax.tree.map(
-                lambda moment, grad: _BETA1 * moment + (1.0 - _BETA1) * grad,
-                first,
-                safe_grads,
-            )
-            second = jax.tree.map(
-                lambda moment, grad: _BETA2 * moment + (1.0 - _BETA2) * grad * grad,
-                second,
-                safe_grads,
-            )
-            first_hat = jax.tree.map(
-                lambda value: value
-                / (1.0 - _BETA1 ** count_updates.astype(value.dtype)),
-                first,
-            )
-            second_hat = jax.tree.map(
-                lambda value: value
-                / (1.0 - _BETA2 ** count_updates.astype(value.dtype)),
-                second,
-            )
-            parameters = jax.tree.map(
-                lambda value, first_value, second_value: value
-                - _step_learning_rate(lr, lr_warmup, step_index)
-                * first_value
-                / (jnp.sqrt(second_value) + _EPS),
-                parameters,
-                first_hat,
-                second_hat,
-            )
-            return parameters, first, second, count_updates
-
-        current, first_moment, second_moment, update_count = lax.cond(
-            update_applied,
-            apply_update,
-            lambda state: state,
-            (current, first_moment, second_moment, update_count),
         )
         if snapshot_steps:
             capture = jnp.any(snapshot_indices == step_index)
@@ -336,14 +440,13 @@ def train_molecular_forward_KLXX_G(
     domain._validate(target_samples, "molecular KLXX target samples")
     domain._validate(source_samples, "molecular KLXX source samples")
     domain._validate(hat_samples, "molecular KLXX hat samples")
-    if n_batch < 2 or steps < 1:
-        raise ValueError("n_batch must be at least two and steps positive")
+    n_batch = _integer("n_batch", n_batch, minimum=2)
+    steps = _integer("steps", steps)
     if n_batch > min(target_samples.shape[0], source_samples.shape[0]):
         raise ValueError("n_batch cannot exceed the source or target pool")
     if not math.isfinite(lr) or lr <= 0:
         raise ValueError("lr must be positive and finite")
-    if lr_warmup < 0:
-        raise ValueError("lr_warmup must be nonnegative")
+    lr_warmup = _integer("lr_warmup", lr_warmup, minimum=0)
     if any(
         not isinstance(value, int)
         or isinstance(value, bool)
@@ -363,12 +466,12 @@ def train_molecular_forward_KLXX_G(
         raise ValueError("KLXX coefficients must be nonnegative and finite")
     if coeff_alpha + coeff_beta <= 0:
         raise ValueError("at least one KLXX mixture coefficient must be positive")
-    if mc_step <= 0 or mc_iters < 1 or images < 1:
-        raise ValueError("molecular MALA controls must be positive")
-    if math.isnan(e_clip) or e_clip < 0:
-        raise ValueError("e_clip must be nonnegative")
-    if math.isnan(g_clip) or g_clip <= 0:
-        raise ValueError("g_clip must be positive")
+    if not math.isfinite(mc_step) or mc_step <= 0:
+        raise ValueError("mc_step must be positive and finite")
+    mc_iters = _integer("mc_iters", mc_iters)
+    images = _integer("images", images)
+    e_clip = _screen("e_clip", e_clip)
+    g_clip = _screen("g_clip", g_clip)
 
     key = jax.random.fold_in(jax.random.key(37), seed)
     params, static = eqx.partition(flow, eqx.is_inexact_array)
@@ -476,52 +579,18 @@ def train_molecular_forward_KLXX_G(
         )(current)
         target_count = jnp.sum(target_valid)
         mixture_count = jnp.sum(mixture_valid)
-        update_applied = (
-            (target_count > 0)
-            & (mixture_count > 0)
-            & jnp.isfinite(loss)
-            & _tree_all_finite(grads)
-        )
-
-        def apply_update(state):
-            parameters, first, second, count_updates = state
-            count_updates = count_updates + 1
-            safe_grads = _clip_global(grads, g_clip) if g_clip != float("inf") else grads
-            first = jax.tree.map(
-                lambda moment, grad: _BETA1 * moment + (1.0 - _BETA1) * grad,
-                first,
-                safe_grads,
+        current, first_moment, second_moment, update_count, update_applied = (
+            _adam_step(
+                current,
+                first_moment,
+                second_moment,
+                grads,
+                loss,
+                update_count,
+                _step_learning_rate(lr, lr_warmup, step_index),
+                g_clip,
+                (target_count > 0) & (mixture_count > 0),
             )
-            second = jax.tree.map(
-                lambda moment, grad: _BETA2 * moment + (1.0 - _BETA2) * grad * grad,
-                second,
-                safe_grads,
-            )
-            first_hat = jax.tree.map(
-                lambda value: value
-                / (1.0 - _BETA1 ** count_updates.astype(value.dtype)),
-                first,
-            )
-            second_hat = jax.tree.map(
-                lambda value: value
-                / (1.0 - _BETA2 ** count_updates.astype(value.dtype)),
-                second,
-            )
-            step_lr = _step_learning_rate(lr, lr_warmup, step_index)
-            parameters = jax.tree.map(
-                lambda value, first_value, second_value: value
-                - step_lr * first_value / (jnp.sqrt(second_value) + _EPS),
-                parameters,
-                first_hat,
-                second_hat,
-            )
-            return parameters, first, second, count_updates
-
-        current, first_moment, second_moment, update_count = lax.cond(
-            update_applied,
-            apply_update,
-            lambda state: state,
-            (current, first_moment, second_moment, update_count),
         )
         if snapshot_steps:
             capture = jnp.any(snapshot_indices == step_index)

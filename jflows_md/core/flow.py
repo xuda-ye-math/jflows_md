@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+import math
 from math import pi
+import operator
 from typing import ClassVar
 
 import equinox as eqx
@@ -14,6 +16,18 @@ from jax import Array
 from jflows.flow import CircularRQSTransform, MonotonicRQSTransform, Transform
 
 from .domain import Mixed_Domain
+
+
+def _integer(name: str, value, minimum: int = 0) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer, not a boolean")
+    try:
+        result = operator.index(value)
+    except TypeError as exc:
+        raise ValueError(f"{name} must be an integer, got {value!r}") from exc
+    if result < minimum:
+        raise ValueError(f"{name} must be at least {minimum}, got {value!r}")
+    return result
 
 
 class Mixed_Domain_Wrap(Transform):
@@ -70,12 +84,28 @@ class Mixed_Spline_Coupling(Transform):
         slope: float,
         activation: Callable[[Array], Array],
     ):
-        condition = tuple(sorted(int(index) for index in condition_indices))
+        condition = tuple(
+            sorted(_integer("condition index", index) for index in condition_indices)
+        )
+        if len(set(condition)) != len(condition) or any(
+            index >= domain.dimension for index in condition
+        ):
+            raise ValueError("condition indices must be unique and lie in the domain")
         transformed = tuple(index for index in range(domain.dimension) if index not in condition)
         if not condition or not transformed:
             raise ValueError("a mixed spline coupling needs nonempty condition and transform sets")
-        if bins < 2 or euclidean_bound <= 0 or not (0 < slope < 1):
+        bins = _integer("bins", bins, minimum=2)
+        if (
+            not math.isfinite(float(euclidean_bound))
+            or euclidean_bound <= 0
+            or not math.isfinite(float(slope))
+            or not 0 < slope < 1
+        ):
             raise ValueError("invalid mixed spline configuration")
+        hidden_features = tuple(
+            _integer("hidden feature width", width, minimum=1)
+            for width in hidden_features
+        )
         if not hidden_features or len(set(hidden_features)) != 1:
             raise ValueError("hidden_features must contain one repeated positive width")
 
@@ -88,7 +118,7 @@ class Mixed_Spline_Coupling(Transform):
         self.euclidean_positions = tuple(transformed.index(index) for index in euclidean)
         self.periodic_positions = tuple(transformed.index(index) for index in periodic)
         self.domain = domain
-        self.bins = int(bins)
+        self.bins = bins
         self.euclidean_bound = float(euclidean_bound)
         self.slope = float(slope)
 

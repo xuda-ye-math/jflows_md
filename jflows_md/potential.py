@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from pathlib import Path
 
 import equinox as eqx
@@ -51,6 +52,8 @@ class Molecular_Potential(Potential):
         self.coordinates = Internal_Coordinates(bundle.coordinates)
         self.reference_positions_nm = jnp.asarray(bundle.validation["frames_nm"][0])
         self.temperature_kelvin = float(bundle.manifest["temperature_kelvin"])
+        if not math.isfinite(self.temperature_kelvin) or self.temperature_kelvin <= 0:
+            raise ValueError("bundle temperature must be positive and finite")
         self.beta = jnp.asarray(1.0 / (KB_KJ_MOL_K * self.temperature_kelvin))
         self.bundle_name = bundle.name
         self.bundle_path = str(bundle.path)
@@ -61,6 +64,8 @@ class Molecular_Potential(Potential):
             raise ValueError("SystemSpec and CoordinateSpec atom counts differ")
         if self.reference_positions_nm.shape != (self.forcefield.n_atoms, 3):
             raise ValueError("bundle reference positions have the wrong shape")
+        if not bool(jnp.all(jnp.isfinite(self.reference_positions_nm))):
+            raise ValueError("bundle reference positions must be finite")
 
     @classmethod
     def from_bundle(

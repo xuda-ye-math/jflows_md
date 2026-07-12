@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import operator
+
 import equinox as eqx
 import jax.numpy as jnp
 from jax import Array
@@ -19,10 +21,17 @@ class Mixed_Domain(eqx.Module):
     dimension: int = eqx.field(static=True)
 
     def __init__(self, euclidean_dim: int, periodic_dim: int):
+        if isinstance(euclidean_dim, bool) or isinstance(periodic_dim, bool):
+            raise ValueError("mixed-domain dimensions must be integers, not booleans")
+        try:
+            euclidean_dim = operator.index(euclidean_dim)
+            periodic_dim = operator.index(periodic_dim)
+        except TypeError as exc:
+            raise ValueError("mixed-domain dimensions must be integers") from exc
         if euclidean_dim < 0 or periodic_dim < 0 or euclidean_dim + periodic_dim <= 0:
             raise ValueError("invalid mixed-domain dimensions")
-        self.euclidean_dim = int(euclidean_dim)
-        self.periodic_dim = int(periodic_dim)
+        self.euclidean_dim = euclidean_dim
+        self.periodic_dim = periodic_dim
         self.dimension = self.euclidean_dim + self.periodic_dim
 
     def _validate(self, x: Array, name: str) -> None:

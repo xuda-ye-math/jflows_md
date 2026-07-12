@@ -62,8 +62,9 @@ def main() -> None:
     _, autodiff_logdet = jnp.linalg.slogdet(jacobian)
     assert float(jnp.abs(autodiff_logdet - ladj[0])) < 1e-8
 
-    # Regression gates from the corrected jflows NCSF (commit f50e074):
-    # periodic conditioner embeddings and double-sided circular wrapping.
+    # Regression gates inherited from corrected jflows circular splines:
+    # periodic conditioner embeddings, representative wrapping, and the
+    # learned derivative at the exact torus seam.
     shift = jnp.asarray([0.0, 0.0, 0.0, 2.0 * jnp.pi, -2.0 * jnp.pi])
     shifted_y, shifted_ladj = flow.call_and_ladj(x + shift)
     assert float(jnp.max(jnp.abs(domain.displacement(shifted_y, y)))) < 1e-9
@@ -79,6 +80,22 @@ def main() -> None:
     seam_y, seam_ladj = flow.call_and_ladj(seam)
     assert float(jnp.max(jnp.abs(domain.displacement(seam_y[:1], seam_y[1:])))) < 1e-4
     assert float(jnp.abs(seam_ladj[0] - seam_ladj[1])) < 1e-4
+
+    exact_seam = jnp.repeat(x[:1], 4, axis=0)
+    exact_seam = exact_seam.at[:, 3].set(
+        jnp.asarray([-3.0 * jnp.pi, -jnp.pi, jnp.pi, 3.0 * jnp.pi])
+    )
+    exact_y, exact_ladj = flow.call_and_ladj(exact_seam)
+    assert float(
+        jnp.max(jnp.abs(domain.displacement(exact_y, exact_y[:1].repeat(4, axis=0))))
+    ) < 1e-10
+    assert float(jnp.max(jnp.abs(exact_ladj - exact_ladj[0]))) < 1e-10
+    assert float(jnp.abs(exact_ladj[0] - seam_ladj[1])) < 1e-4
+    exact_x, exact_inverse_ladj = flow.inv_and_ladj(exact_y)
+    assert float(
+        jnp.max(jnp.abs(domain.displacement(exact_x, domain.wrap(exact_seam))))
+    ) < 1e-8
+    assert float(jnp.max(jnp.abs(exact_ladj + exact_inverse_ladj))) < 1e-8
 
     gradients = eqx.filter_grad(
         lambda candidate: (

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import operator
 
 import equinox as eqx
 import jax
@@ -49,8 +50,10 @@ class Molecular_Source(Potential):
             raise ValueError("source mean has the wrong shape")
         if self.variance.shape != (domain.euclidean_dim,):
             raise ValueError("source variance has the wrong shape")
-        if bool(jnp.any(self.variance <= 0)):
-            raise ValueError("source variance must be positive")
+        if not bool(jnp.all(jnp.isfinite(self.mean))):
+            raise ValueError("source mean must be finite")
+        if not bool(jnp.all(jnp.isfinite(self.variance) & (self.variance > 0))):
+            raise ValueError("source variance must be finite and positive")
 
     @classmethod
     def from_spec(cls, domain: Mixed_Domain, spec: Mapping) -> "Molecular_Source":
@@ -72,8 +75,14 @@ class Molecular_Source(Potential):
             raise ValueError("pass only one of N or n")
         if N is None:
             raise TypeError("missing required sample count N")
+        if isinstance(N, bool):
+            raise ValueError("N must be a positive integer, not a boolean")
+        try:
+            N = operator.index(N)
+        except TypeError as exc:
+            raise ValueError(f"N must be a positive integer, got {N!r}") from exc
         if N < 1:
-            raise ValueError("N must be positive")
+            raise ValueError("N must be a positive integer")
         gaussian_key, torus_key = jax.random.split(key)
         euclidean = self.mean + jnp.sqrt(self.variance) * jax.random.normal(
             gaussian_key, (N, self.domain.euclidean_dim), dtype=self.mean.dtype

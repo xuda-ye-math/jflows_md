@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import operator
 
 import equinox as eqx
 import jax
@@ -38,6 +39,76 @@ _DEFAULTS = {
 }
 
 
+def _integer(name: str, value, minimum: int = 1) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer, not a boolean")
+    try:
+        result = operator.index(value)
+    except TypeError as exc:
+        raise ValueError(f"{name} must be an integer, got {value!r}") from exc
+    if result < minimum:
+        raise ValueError(f"{name} must be at least {minimum}, got {value!r}")
+    return result
+
+
+def _screen(name: str, value) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a real scalar, got {value!r}") from exc
+    if math.isnan(result) or result < 0:
+        raise ValueError(f"{name} must be nonnegative")
+    return result
+
+
+def _bg_parameters(bg_param: dict | None) -> dict:
+    """Merge and validate molecular adaptive-ladder controls."""
+
+    parameters = dict(_DEFAULTS)
+    if bg_param:
+        unknown = set(bg_param) - set(parameters)
+        if unknown:
+            raise ValueError(f"unknown molecular bg_param keys: {sorted(unknown)}")
+        parameters.update(bg_param)
+
+    real_names = (
+        "t_safe",
+        "shrink_factor",
+        "enlarge_factor",
+        "tau_smc",
+        "tau_ess",
+        "t_tol",
+    )
+    try:
+        values = {name: float(parameters[name]) for name in real_names}
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"molecular bg_param values must be real: {parameters!r}"
+        ) from exc
+    if not all(math.isfinite(value) for value in values.values()):
+        raise ValueError(f"molecular bg_param values must be finite: {parameters!r}")
+    if not (
+        0.0 < values["t_safe"] <= 1.0
+        and 0.0 < values["shrink_factor"] < 1.0
+        and values["enlarge_factor"] > 1.0
+        and 0.0 <= values["tau_smc"] <= 1.0
+        and 0.0 <= values["tau_ess"] <= 1.0
+        and 0.0 < values["t_tol"] <= 1.0
+    ):
+        raise ValueError(f"invalid molecular bg_param: {parameters!r}")
+    if values["t_safe"] < 1.0 and min(
+        values["t_safe"] * (1.0 + values["enlarge_factor"]), 1.0
+    ) <= values["t_safe"]:
+        raise ValueError(
+            "molecular bg_param cannot advance the ladder in floating-point "
+            "arithmetic"
+        )
+    for name in ("max_stages", "max_retry"):
+        parameters[name] = _integer(name, parameters[name])
+    parameters.update(values)
+    return parameters
+
+
 def _operation_key(base_key: Array, namespace: int, *indices: int) -> Array:
     """Derive a deterministic key in a disjoint operation namespace."""
     key = jax.random.fold_in(base_key, namespace)
@@ -46,21 +117,30 @@ def _operation_key(base_key: Array, namespace: int, *indices: int) -> Array:
     return key
 
 
-def _finite_log_weights(log_weight: Array) -> Array:
-    return jnp.where(jnp.isfinite(log_weight), log_weight, -jnp.inf)
-
-
 def _ess(log_weight: Array) -> float:
-    value = compute_ESS_log(_finite_log_weights(log_weight))
+    value = compute_ESS_log(log_weight)
     return float(jnp.where(jnp.isfinite(value), value, 0.0))
 
 
 def _linear_weights(log_weight: Array) -> Array:
-    log_weight = _finite_log_weights(log_weight)
+    log_weight = jnp.asarray(log_weight)
+    if not jnp.issubdtype(log_weight.dtype, jnp.inexact):
+        log_weight = log_weight.astype(jnp.result_type(float))
+    has_nan = jnp.any(jnp.isnan(log_weight))
+    positive_infinity = jnp.isposinf(log_weight)
+    has_positive_infinity = jnp.any(positive_infinity)
     finite = jnp.isfinite(log_weight)
+    has_finite = jnp.any(finite)
     maximum = jnp.max(jnp.where(finite, log_weight, -jnp.inf))
-    weight = jnp.where(finite, jnp.exp(log_weight - maximum), 0.0)
-    return jnp.where(weight.sum() > 0, weight, jnp.ones_like(weight))
+    regular = jnp.where(finite, jnp.exp(log_weight - maximum), 0.0)
+    weight = jnp.where(
+        has_positive_infinity,
+        positive_infinity.astype(log_weight.dtype),
+        regular,
+    )
+    valid = ~has_nan & (has_positive_infinity | has_finite)
+    weight = jnp.where(valid, weight, jnp.zeros_like(weight))
+    return jnp.where(valid & (weight.sum() > 0), weight, jnp.ones_like(weight))
 
 
 @eqx.filter_jit
@@ -85,7 +165,7 @@ def _chunked_identity_weights(samples, source, target, chunk: int) -> Array:
         values.append(
             jax.block_until_ready(_identity_weight_chunk(part, source, target))
         )
-    return _finite_log_weights(jnp.concatenate(values))
+    return jnp.concatenate(values)
 
 
 def _chunked_inverse(flow, samples, chunk: int) -> Array:
@@ -165,16 +245,22 @@ def molecular_boltzmann_forward_KLX_G(
         raise TypeError("the molecular target must expose domain and reference_internal")
     if x_valid.ndim != 2 or x_valid.shape[0] < 1:
         raise ValueError(f"x_valid must have shape [N, d], got {x_valid.shape}")
-    if min(n_pool, n_batch, steps, ladder, mc_iters, chunk) < 1:
-        raise ValueError("all molecular training sizes must be positive")
+    n_pool = _integer("n_pool", n_pool)
+    n_batch = _integer("n_batch", n_batch)
+    steps = _integer("steps", steps)
+    ladder = _integer("ladder", ladder)
+    mc_iters = _integer("mc_iters", mc_iters)
+    chunk = _integer("chunk", chunk)
+    images = _integer("images", images)
     if n_batch > n_pool:
         raise ValueError("n_batch cannot exceed n_pool")
     if chunk > min(n_pool, x_valid.shape[0]):
         raise ValueError("chunk cannot exceed n_pool or the x_valid sample count")
     if not math.isfinite(lr) or lr <= 0:
         raise ValueError("lr must be positive and finite")
-    if lr_warmup < 0:
-        raise ValueError("lr_warmup must be nonnegative")
+    if not math.isfinite(mc_step) or mc_step <= 0:
+        raise ValueError("mc_step must be positive and finite")
+    lr_warmup = _integer("lr_warmup", lr_warmup, minimum=0)
     if any(
         not isinstance(value, int)
         or isinstance(value, bool)
@@ -201,31 +287,12 @@ def molecular_boltzmann_forward_KLX_G(
             raise ValueError("molecular KLXX coefficients and melt must be nonnegative")
         if _coeff_alpha + _coeff_beta <= 0:
             raise ValueError("molecular KLXX mixture weights cannot both be zero")
-        if _opt_step <= 0 or _opt_iters < 1:
+        if not math.isfinite(_opt_step) or _opt_step <= 0:
             raise ValueError("molecular KLXX QT controls must be positive")
-    if math.isnan(e_clip) or e_clip < 0:
-        raise ValueError("e_clip must be nonnegative")
-    if math.isnan(g_clip) or g_clip <= 0:
-        raise ValueError("g_clip must be positive")
-    parameters = dict(_DEFAULTS)
-    if bg_param:
-        unknown = set(bg_param) - set(parameters)
-        if unknown:
-            raise ValueError(f"unknown molecular bg_param keys: {sorted(unknown)}")
-        parameters.update(bg_param)
-    integer_controls = (parameters["max_stages"], parameters["max_retry"])
-    if not (
-        0 < parameters["t_safe"] <= 1
-        and 0 < parameters["shrink_factor"] < 1
-        and parameters["enlarge_factor"] > 1
-        and 0 <= parameters["tau_smc"] <= 1
-        and 0 <= parameters["tau_ess"] <= 1
-        and 0 < parameters["t_tol"] <= 1
-        and all(isinstance(value, int) and not isinstance(value, bool) for value in integer_controls)
-        and parameters["max_stages"] >= 1
-        and parameters["max_retry"] >= 1
-    ):
-        raise ValueError(f"invalid molecular bg_param: {parameters}")
+        _opt_iters = _integer("opt_iters", _opt_iters)
+    e_clip = _screen("e_clip", e_clip)
+    g_clip = _screen("g_clip", g_clip)
+    parameters = _bg_parameters(bg_param)
 
     status = monitor.printer if monitor is not None else print
     base_key = jax.random.fold_in(jax.random.key(41), seed)
@@ -245,6 +312,12 @@ def molecular_boltzmann_forward_KLX_G(
         )
         if 1.0 - candidate_t < parameters["t_tol"]:
             candidate_t = 1.0
+        if not (previous_t < candidate_t <= 1.0):
+            status(
+                f"[stage {stage_index}] candidate t={candidate_t!r} does not "
+                f"advance past t={previous_t!r}; ladder incomplete"
+            )
+            break
         previous = linear_combination(
             [target, source], [previous_t, 1.0 - previous_t]
         )
@@ -256,6 +329,12 @@ def molecular_boltzmann_forward_KLX_G(
         selection_pool = particles[indices]
         selection_accepted = False
         for selection_attempt in range(60):
+            if not candidate_t > previous_t:
+                status(
+                    f"[stage {stage_index}] selection shrink made no "
+                    "floating-point progress"
+                )
+                break
             current = linear_combination(
                 [target, source], [candidate_t, 1.0 - candidate_t]
             )
@@ -296,6 +375,12 @@ def molecular_boltzmann_forward_KLX_G(
 
         accepted = False
         for attempt in range(1, parameters["max_retry"] + 1):
+            if not candidate_t > previous_t:
+                status(
+                    f"[stage {stage_index}] retry shrink made no "
+                    "floating-point progress"
+                )
+                break
             current = linear_combination(
                 [target, source], [candidate_t, 1.0 - candidate_t]
             )
@@ -460,14 +545,12 @@ def molecular_boltzmann_forward_KLX_G(
                         identity_log_weight, -jnp.inf
                     )
                 else:
-                    checkpoint_log_weight = _finite_log_weights(
-                        _importance_weights_g(
-                            particles,
-                            previous,
-                            current,
-                            checkpoint_flow,
-                            chunk,
-                        )
+                    checkpoint_log_weight = _importance_weights_g(
+                        particles,
+                        previous,
+                        current,
+                        checkpoint_flow,
+                        chunk,
                     )
                 checkpoint_ess = _ess(checkpoint_log_weight)
                 status(

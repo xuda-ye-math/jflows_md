@@ -16,7 +16,10 @@ support, source shapes, JIT compatibility, and the flat `jflows_md.utils`
 interface for mixed-domain MALA and a two-level potential-space SMC bridge. The
 `Mixed_NSF` regression checks cover identity initialization, round trips,
 log-determinants, periodic-representative invariance, seam continuity, and
-finite gradients. A public compatibility test verifies the committed `jflows`
+finite gradients. The molecular edge suite protects overflow-stable clipping,
+atomic Adam rejection, degenerate log-weight handling, and early rejection of
+invalid domains, sources, flows, MCMC controls, and bridge schedules. A public
+compatibility test verifies the committed `jflows`
 signatures and compiled stage-training scheme, chunked public sampling calls,
 and the transform primitives used by `jflows_md`. Molecular controller tests
 verify fixed-shape chunk execution, disjoint PRNG streams, versioned artifact
