@@ -18,6 +18,9 @@ __all__ = [
     "Molecular_Source",
     "annealed_importance_sampling",
     "available_bundles",
+    "boltzmann_forward_KLX_G",
+    "boltzmann_forward_KLXX_G",
+    "load_mixed_flow",
     "load_mixed_flow_stages",
     "mixed_flow_metadata",
     "mixed_mala",
@@ -28,6 +31,9 @@ __all__ = [
     "sequential_monte_carlo",
     "train_molecular_forward_KLX_G",
     "train_molecular_forward_KLXX_G",
+    "train_forward_KLX_G",
+    "train_forward_KLXX_G",
+    "save_mixed_flow",
     "package_source_sha256",
 ]
 
@@ -43,6 +49,9 @@ _EXPORTS = {
         "annealed_importance_sampling",
     ),
     "available_bundles": (".system", "available_bundles"),
+    "boltzmann_forward_KLX_G": (".boltzmann", "boltzmann_forward_KLX_G"),
+    "boltzmann_forward_KLXX_G": (".boltzmann", "boltzmann_forward_KLXX_G"),
+    "load_mixed_flow": (".artifacts", "load_mixed_flow"),
     "load_mixed_flow_stages": (".artifacts", "load_mixed_flow_stages"),
     "mixed_flow_metadata": (".artifacts", "mixed_flow_metadata"),
     "mixed_mala": (".utils", "mixed_mala"),
@@ -65,6 +74,9 @@ _EXPORTS = {
         ".train",
         "train_molecular_forward_KLXX_G",
     ),
+    "train_forward_KLX_G": (".train", "train_forward_KLX_G"),
+    "train_forward_KLXX_G": (".train", "train_forward_KLXX_G"),
+    "save_mixed_flow": (".artifacts", "save_mixed_flow"),
     "package_source_sha256": (".artifacts", "package_source_sha256"),
 }
 

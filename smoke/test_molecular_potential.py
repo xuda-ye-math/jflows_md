@@ -157,6 +157,46 @@ def check_regularized_potential() -> None:
     print("PASS shift-invariant molecular energy regularization")
 
 
+def check_temperature_override() -> None:
+    """Changing temperature rescales energy but preserves bundle mechanics."""
+
+    cold = Molecular_Potential.from_bundle("glycerol_gaff2_am1bcc_obc1")
+    hot = Molecular_Potential.from_bundle(
+        "glycerol_gaff2_am1bcc_obc1", temperature_kelvin=600.0
+    )
+    assert cold.temperature_kelvin == 300.0
+    assert hot.temperature_kelvin == 600.0
+    np.testing.assert_allclose(hot.beta, 0.5 * cold.beta, rtol=0, atol=1e-15)
+    q = cold.source().samples(jax.random.key(702), N=8)
+    _, logdet = cold.coordinates.to_cartesian(q)
+    expected = hot.beta * cold.physical_energy(q) - logdet
+    np.testing.assert_allclose(hot(q), expected, rtol=0, atol=1e-11)
+    np.testing.assert_allclose(
+        hot.source().mean, cold.source().mean, rtol=0, atol=0
+    )
+    np.testing.assert_allclose(
+        hot.source().variance, 2.0 * cold.source().variance, rtol=0, atol=1e-15
+    )
+    guarded = hot.source(defensive_weight=1e-3, defensive_df=3.0)
+    assert guarded.defensive_weight == 1e-3
+    assert guarded.defensive_df == 3.0
+    np.testing.assert_allclose(
+        guarded.variance, hot.source().variance, rtol=0, atol=0
+    )
+    assert hot.forcefield.n_atoms == cold.forcefield.n_atoms
+    assert hot.manifest_sha256 == cold.manifest_sha256
+    for invalid in (0.0, -1.0, jnp.inf, jnp.nan):
+        try:
+            Molecular_Potential.from_bundle(
+                "glycerol_gaff2_am1bcc_obc1", temperature_kelvin=invalid
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"invalid temperature was accepted: {invalid}")
+    print("PASS molecular target-temperature override")
+
+
 def check_empty_force_interactions() -> None:
     """Small molecules may legitimately omit one or more force families."""
 
@@ -276,6 +316,7 @@ def main() -> None:
     )
     print("PASS rigid-motion-quotient BAT Jacobian")
     check_regularized_potential()
+    check_temperature_override()
     check_empty_force_interactions()
 
 

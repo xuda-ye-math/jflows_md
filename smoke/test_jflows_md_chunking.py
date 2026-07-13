@@ -20,6 +20,7 @@ from jflows_md.utils import (  # noqa: E402
     _mixed_mala_chunk,
     annealed_importance_sampling,
     mixed_mala,
+    mixed_quench_and_temper,
     potential_space_smc,
     sequential_monte_carlo,
 )
@@ -44,11 +45,23 @@ def main() -> None:
     assert not hasattr(sequential_monte_carlo, "lower")
     assert not hasattr(annealed_importance_sampling, "lower")
     assert hasattr(_mixed_mala_chunk, "lower")
+    assert tuple(inspect.signature(mixed_mala).parameters)[4:] == (
+        "dt",
+        "steps",
+        "image_radius",
+        "chunks",
+    )
     assert tuple(inspect.signature(sequential_monte_carlo).parameters)[4:7] == (
         "ladder",
-        "step",
-        "iters",
+        "mc_dt",
+        "mc_steps",
     )
+    assert "mc_image_radius" in inspect.signature(
+        mixed_quench_and_temper
+    ).parameters
+    assert "mc_image_radius" in inspect.signature(
+        annealed_importance_sampling
+    ).parameters
 
     domain = Mixed_Domain(2, 1)
     source = Toy_Mixed_Potential(domain, [0.0, 0.0, 0.0])
@@ -64,9 +77,9 @@ def main() -> None:
         initial,
         target,
         domain,
-        step=1e-2,
-        iters=2,
-        images=3,
+        mc_dt=1e-2,
+        mc_steps=2,
+        image_radius=3,
     )
     jax.block_until_ready((single_result, single_manual))
     assert all(
@@ -86,9 +99,9 @@ def main() -> None:
             part,
             target,
             domain,
-            step=1e-2,
-            iters=2,
-            images=3,
+            mc_dt=1e-2,
+            mc_steps=2,
+            image_radius=3,
         )
         for part_key, part in zip(keys, parts)
     ]

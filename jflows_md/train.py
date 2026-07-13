@@ -17,6 +17,8 @@ from .utils import _mixed_mala_chunk
 
 
 __all__ = [
+    "train_forward_KLX_G",
+    "train_forward_KLXX_G",
     "train_molecular_forward_KLX_G",
     "train_molecular_forward_KLXX_G",
 ]
@@ -172,14 +174,14 @@ def _adam_step(
 
 
 @eqx.filter_jit
-def train_molecular_forward_KLX_G(
+def train_forward_KLX_G(
     target_samples: Array,
     source_samples: Array,
     source,
     target,
     flow,
-    n_batch: int,
-    steps: int,
+    batch_size: int,
+    train_steps: int,
     lr: float,
     *,
     coeff_lambda: float = 1.0,
@@ -215,11 +217,11 @@ def train_molecular_forward_KLX_G(
         raise ValueError(
             "target_samples and source_samples must share one dimension"
         )
-    n_batch = integer("n_batch", n_batch)
-    steps = integer("steps", steps)
-    if n_batch > min(target_samples.shape[0], source_samples.shape[0]):
+    batch_size = integer("batch_size", batch_size)
+    train_steps = integer("train_steps", train_steps)
+    if batch_size > min(target_samples.shape[0], source_samples.shape[0]):
         raise ValueError(
-            "n_batch cannot exceed the source or target sample pool"
+            "batch_size cannot exceed the source or target sample pool"
         )
     if not math.isfinite(lr) or lr <= 0:
         raise ValueError("lr must be positive and finite")
@@ -243,7 +245,7 @@ def train_molecular_forward_KLX_G(
             jax.random.choice(
                 target_key,
                 target_samples.shape[0],
-                (n_batch,),
+                (batch_size,),
                 replace=False,
             )
         ]
@@ -251,7 +253,7 @@ def train_molecular_forward_KLX_G(
             jax.random.choice(
                 source_key,
                 source_samples.shape[0],
-                (n_batch,),
+                (batch_size,),
                 replace=False,
             )
         ]
@@ -265,7 +267,7 @@ def train_molecular_forward_KLX_G(
         energy_keep = jnp.isfinite(energy)
         if e_clip != float("inf"):
             energy_keep = energy_keep & (energy - origin <= e_clip)
-        permutation = jax.random.permutation(perm_key, n_batch)
+        permutation = jax.random.permutation(perm_key, batch_size)
 
         def loss_fn(trainable):
             candidate = eqx.combine(trainable, static)
@@ -302,7 +304,7 @@ def train_molecular_forward_KLX_G(
             )
         )
         ess = compute_ESS_log(proposal_log_weight)
-        kept_fraction = count.astype(z.dtype) / n_batch
+        kept_fraction = count.astype(z.dtype) / batch_size
         if monitor is not None:
             monitor.report(step_index, loss, ess)
         return (current, first_moment, second_moment, update_count), (
@@ -311,7 +313,7 @@ def train_molecular_forward_KLX_G(
             update_applied,
         )
 
-    indices = jnp.arange(1, steps + 1)
+    indices = jnp.arange(1, train_steps + 1)
     (params, _, _, _), (ess, kept, updated) = lax.scan(
         body,
         (
@@ -327,7 +329,7 @@ def train_molecular_forward_KLX_G(
 
 
 @eqx.filter_jit
-def train_molecular_forward_KLXX_G(
+def train_forward_KLXX_G(
     target_samples: Array,
     source_samples: Array,
     hat_samples: Array,
@@ -335,16 +337,16 @@ def train_molecular_forward_KLXX_G(
     target,
     flow,
     domain: Mixed_Domain,
-    n_batch: int,
-    steps: int,
+    batch_size: int,
+    train_steps: int,
     lr: float,
     *,
     coeff_lambda: float = 1.0,
     coeff_alpha: float = 0.5,
     coeff_beta: float = 0.5,
-    mc_step: float = 1e-3,
-    mc_iters: int = 1,
-    images: int = 3,
+    mc_dt: float = 1e-3,
+    mc_steps: int = 1,
+    mc_image_radius: int = 3,
     energy_origin: Array | float = 0.0,
     e_clip: float = float("inf"),
     g_clip: float = float("inf"),
@@ -364,7 +366,7 @@ def train_molecular_forward_KLXX_G(
     same pre-update source minibatch supplies the honest proposal-to-target
     importance weights returned as the per-step ESS history; optimizer-only
     ``e_clip`` never screens those weights.
-    The four-value return matches :func:`train_molecular_forward_KLX_G`.
+    The four-value return matches :func:`train_forward_KLX_G`.
     """
 
     pools = (target_samples, source_samples, hat_samples)
@@ -375,20 +377,20 @@ def train_molecular_forward_KLXX_G(
     domain._validate(target_samples, "molecular KLXX target samples")
     domain._validate(source_samples, "molecular KLXX source samples")
     domain._validate(hat_samples, "molecular KLXX hat samples")
-    n_batch = integer("n_batch", n_batch, minimum=2)
-    steps = integer("steps", steps)
-    if n_batch > min(target_samples.shape[0], source_samples.shape[0]):
-        raise ValueError("n_batch cannot exceed the source or target pool")
+    batch_size = integer("batch_size", batch_size, minimum=2)
+    train_steps = integer("train_steps", train_steps)
+    if batch_size > min(target_samples.shape[0], source_samples.shape[0]):
+        raise ValueError("batch_size cannot exceed the source or target pool")
     if not math.isfinite(lr) or lr <= 0:
         raise ValueError("lr must be positive and finite")
     lr_warmup = integer("lr_warmup", lr_warmup, minimum=0)
     coefficients = (coeff_lambda, coeff_alpha, coeff_beta)
     if any(not math.isfinite(value) or value < 0 for value in coefficients):
         raise ValueError("KLXX coefficients must be nonnegative and finite")
-    if not math.isfinite(mc_step) or mc_step <= 0:
-        raise ValueError("mc_step must be positive and finite")
-    mc_iters = integer("mc_iters", mc_iters, minimum=0)
-    images = integer("images", images)
+    if not math.isfinite(mc_dt) or mc_dt <= 0:
+        raise ValueError("mc_dt must be positive and finite")
+    mc_steps = integer("mc_steps", mc_steps, minimum=0)
+    mc_image_radius = integer("mc_image_radius", mc_image_radius)
     e_clip = nonnegative_real("e_clip", e_clip)
     g_clip = nonnegative_real("g_clip", g_clip)
 
@@ -399,8 +401,8 @@ def train_molecular_forward_KLXX_G(
     origin = jnp.asarray(energy_origin)
     mixture_weight = jnp.concatenate(
         (
-            jnp.full((n_batch,), coeff_alpha),
-            jnp.full((n_batch,), coeff_beta),
+            jnp.full((batch_size,), coeff_alpha),
+            jnp.full((batch_size,), coeff_beta),
         )
     )
 
@@ -417,25 +419,25 @@ def train_molecular_forward_KLXX_G(
         ) = jax.random.split(jax.random.fold_in(key, step_index), 7)
         y = target_samples[
             jax.random.choice(
-                target_key, target_samples.shape[0], (n_batch,), replace=False
+                target_key, target_samples.shape[0], (batch_size,), replace=False
             )
         ]
         x_source = source_samples[
             jax.random.choice(
-                source_key, source_samples.shape[0], (n_batch,), replace=False
+                source_key, source_samples.shape[0], (batch_size,), replace=False
             )
         ]
         y_hat = hat_samples[
-            jax.random.randint(hat_key, (n_batch,), 0, hat_samples.shape[0])
+            jax.random.randint(hat_key, (batch_size,), 0, hat_samples.shape[0])
         ]
         y_hat, _ = _mixed_mala_chunk(
             hat_mala_key,
             y_hat,
             target,
             domain,
-            step=mc_step,
-            iters=mc_iters,
-            images=images,
+            mc_dt=mc_dt,
+            mc_steps=mc_steps,
+            image_radius=mc_image_radius,
         )
         flow_now = eqx.combine(current, static)
         y_bar, proposal_ladj = flow_now.inv_and_ladj(x_source)
@@ -447,10 +449,10 @@ def train_molecular_forward_KLXX_G(
             mixture_key,
             jnp.concatenate((y_hat, y_bar), axis=0),
             mixture_weight,
-            N=n_batch,
+            N=batch_size,
         )
-        target_permutation = jax.random.permutation(target_perm_key, n_batch)
-        mixture_permutation = jax.random.permutation(mixture_perm_key, n_batch)
+        target_permutation = jax.random.permutation(target_perm_key, batch_size)
+        mixture_permutation = jax.random.permutation(mixture_perm_key, batch_size)
         target_energy = lax.stop_gradient(target(y))
         mixture_energy = lax.stop_gradient(target(y_mix))
         target_keep = jnp.isfinite(target_energy)
@@ -509,7 +511,9 @@ def train_molecular_forward_KLXX_G(
             )
         )
         ess = compute_ESS_log(proposal_log_weight)
-        kept_fraction = jnp.minimum(target_count, mixture_count).astype(z.dtype) / n_batch
+        kept_fraction = (
+            jnp.minimum(target_count, mixture_count).astype(z.dtype) / batch_size
+        )
         if monitor is not None:
             monitor.report(step_index, loss, ess)
         return (current, first_moment, second_moment, update_count), (
@@ -518,7 +522,7 @@ def train_molecular_forward_KLXX_G(
             update_applied,
         )
 
-    indices = jnp.arange(1, steps + 1)
+    indices = jnp.arange(1, train_steps + 1)
     (params, _, _, _), (ess, kept, updated) = lax.scan(
         body,
         (
@@ -531,3 +535,99 @@ def train_molecular_forward_KLXX_G(
     )
     trained = eqx.combine(params, static)
     return trained, ess, kept, updated
+
+
+def train_molecular_forward_KLX_G(
+    target_samples: Array,
+    source_samples: Array,
+    source,
+    target,
+    flow,
+    n_batch: int,
+    steps: int,
+    lr: float,
+    *,
+    coeff_lambda: float = 1.0,
+    energy_origin: Array | float = 0.0,
+    e_clip: float = float("inf"),
+    g_clip: float = float("inf"),
+    monitor=None,
+    seed: int | Array = 0,
+    checkpoint: bool = False,
+    lr_warmup: int = 0,
+) -> tuple:
+    """Compatibility alias for :func:`train_forward_KLX_G`."""
+
+    return train_forward_KLX_G(
+        target_samples,
+        source_samples,
+        source,
+        target,
+        flow,
+        batch_size=n_batch,
+        train_steps=steps,
+        lr=lr,
+        coeff_lambda=coeff_lambda,
+        energy_origin=energy_origin,
+        e_clip=e_clip,
+        g_clip=g_clip,
+        monitor=monitor,
+        seed=seed,
+        checkpoint=checkpoint,
+        lr_warmup=lr_warmup,
+    )
+
+
+def train_molecular_forward_KLXX_G(
+    target_samples: Array,
+    source_samples: Array,
+    hat_samples: Array,
+    source,
+    target,
+    flow,
+    domain: Mixed_Domain,
+    n_batch: int,
+    steps: int,
+    lr: float,
+    *,
+    mc_step: float = 1e-3,
+    mc_iters: int = 1,
+    images: int = 3,
+    coeff_lambda: float = 1.0,
+    coeff_alpha: float = 0.5,
+    coeff_beta: float = 0.5,
+    energy_origin: Array | float = 0.0,
+    e_clip: float = float("inf"),
+    g_clip: float = float("inf"),
+    monitor=None,
+    seed: int | Array = 0,
+    checkpoint: bool = False,
+    lr_warmup: int = 0,
+) -> tuple:
+    """Compatibility alias for :func:`train_forward_KLXX_G`."""
+
+    return train_forward_KLXX_G(
+        target_samples,
+        source_samples,
+        hat_samples,
+        source,
+        target,
+        flow,
+        domain,
+        batch_size=n_batch,
+        train_steps=steps,
+        lr=lr,
+        mc_dt=mc_step,
+        mc_steps=mc_iters,
+        mc_image_radius=images,
+        coeff_lambda=coeff_lambda,
+        coeff_alpha=coeff_alpha,
+        coeff_beta=coeff_beta,
+        energy_origin=energy_origin,
+        e_clip=e_clip,
+        g_clip=g_clip,
+        monitor=monitor,
+        seed=seed,
+        checkpoint=checkpoint,
+        lr_warmup=lr_warmup,
+    )

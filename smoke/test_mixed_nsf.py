@@ -35,6 +35,30 @@ def main() -> None:
     assert float(jnp.max(jnp.abs(domain.displacement(identity_y, x)))) < 1e-10
     assert float(jnp.max(jnp.abs(identity_ladj))) < 1e-10
 
+    # The opt-in balanced schedule must split both nontrivial domain blocks in
+    # every complementary pair. In particular, two torsions can then directly
+    # condition one another rather than always being transformed together.
+    balanced_domain = Mixed_Domain(7, 2)
+    balanced = Mixed_NSF(
+        jax.random.key(1400),
+        balanced_domain,
+        bins=8,
+        transforms=4,
+        hidden_features=(16, 16),
+        mask_strategy="balanced",
+    )
+    torsions = set(range(7, 9))
+    for first, second in zip(
+        balanced.couplings[::2], balanced.couplings[1::2], strict=True
+    ):
+        first_condition = set(first.condition_indices)
+        second_condition = set(second.condition_indices)
+        assert first_condition.isdisjoint(second_condition)
+        assert first_condition | second_condition == set(range(9))
+        assert first_condition & torsions and second_condition & torsions
+        assert first_condition & set(range(7))
+        assert second_condition & set(range(7))
+
     flow = Mixed_NSF(
         jax.random.key(3),
         domain,
@@ -136,6 +160,12 @@ def main() -> None:
         pass
     else:
         raise AssertionError("one-dimensional Mixed_NSF must fail explicitly")
+    try:
+        Mixed_NSF(jax.random.key(41), domain, mask_strategy="unknown")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("unknown Mixed_NSF mask strategy was accepted")
     print(
         "PASS Mixed_NSF: identity, roundtrip, ladj, autodiff, "
         "Flow.t, period representatives, seam, edge domains, and gradients"

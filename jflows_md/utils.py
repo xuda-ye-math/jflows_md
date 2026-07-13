@@ -9,6 +9,7 @@ import these utilities rather than maintaining separate sampler modules.
 from __future__ import annotations
 
 import math
+from functools import wraps
 
 import equinox as eqx
 import jax
@@ -39,18 +40,51 @@ __all__ = [
 _WRAPPED_RELATIVE_TOLERANCE = 1e-12
 
 
-def wrapped_normal_relative_error_bound(step: float, images: int) -> float:
+def _legacy_keywords(**aliases: str):
+    """Translate retired keywords before Python binds canonical arguments.
+
+    Presence, rather than a comparison with the canonical default, detects a
+    duplicate.  This means ``dt=1e-4, step=1e-4`` is rejected even though both
+    spellings carry the default value.  Positional calls retain their original
+    binding, and :func:`inspect.signature` sees the canonical signature through
+    :func:`functools.wraps`.
+    """
+
+    def decorate(function):
+        @wraps(function)
+        def wrapped(*args, **kwargs):
+            for old, new in aliases.items():
+                if old not in kwargs:
+                    continue
+                if new in kwargs:
+                    raise TypeError(
+                        f"{function.__name__}() received both {new!r} and its "
+                        f"retired alias {old!r}"
+                    )
+                kwargs[new] = kwargs.pop(old)
+            return function(*args, **kwargs)
+
+        return wrapped
+
+    return decorate
+
+
+@_legacy_keywords(mc_dt="dt", mc_step="dt", step="dt", images="image_radius")
+def wrapped_normal_relative_error_bound(
+    dt: float = 1e-4,
+    image_radius: int = 3,
+) -> float:
     """Certified relative tail bound for the truncated wrapped proposal.
 
     The displacement is first reduced to ``[-pi, pi)``. For proposal variance
-    ``2 * step``, this bounds the omitted image mass relative to the retained
+    ``2 * dt``, this bounds the omitted image mass relative to the retained
     wrapped-normal sum uniformly over that interval.
     """
 
-    step = positive_real("step", step)
-    images = integer("images", images, 1)
-    variance = 2.0 * step
-    first_omitted = images + 1
+    dt = positive_real("dt", dt)
+    image_radius = integer("image_radius", image_radius, 1)
+    variance = 2.0 * dt
+    first_omitted = image_radius + 1
     exponent = -(
         ((2 * first_omitted - 1) ** 2 - 1) * math.pi**2
     ) / (2.0 * variance)
@@ -87,14 +121,15 @@ def _proposal_log_density(
     return value
 
 
+@_legacy_keywords(mc_dt="dt", mc_step="dt", step="dt", images="image_radius")
 def mixed_mala_step(
     key: Array,
     samples: Array,
     potential,
     domain: Mixed_Domain,
     *,
-    step: float,
-    images: int = 3,
+    dt: float = 1e-4,
+    image_radius: int = 3,
 ) -> tuple[Array, Array]:
     """Take one Metropolis-adjusted Langevin step on ``R^p x T^q``.
 
@@ -104,32 +139,33 @@ def mixed_mala_step(
     torus seam.
     """
 
-    step = positive_real("mixed_mala_step: step", step)
-    images = integer("mixed_mala_step: images", images, 1)
-    error_bound = wrapped_normal_relative_error_bound(step, images)
-    if error_bound > _WRAPPED_RELATIVE_TOLERANCE:
-        raise ValueError(
-            "wrapped-normal image truncation is not certified: "
-            f"relative bound {error_bound:.3e} exceeds "
-            f"{_WRAPPED_RELATIVE_TOLERANCE:.1e}; increase images or reduce step"
-        )
+    dt = positive_real("mixed_mala_step: dt", dt)
+    image_radius = integer("mixed_mala_step: image_radius", image_radius, 1)
+    if domain.periodic_dim:
+        error_bound = wrapped_normal_relative_error_bound(dt, image_radius)
+        if error_bound > _WRAPPED_RELATIVE_TOLERANCE:
+            raise ValueError(
+                "wrapped-normal image truncation is not certified: "
+                f"relative bound {error_bound:.3e} exceeds "
+                f"{_WRAPPED_RELATIVE_TOLERANCE:.1e}; increase image_radius or reduce dt"
+            )
     noise_key, accept_key = jax.random.split(key)
     energy = potential(samples)
     gradient = potential.grad(samples)
-    mean_forward = samples - step * gradient
+    mean_forward = samples - dt * gradient
     proposal = domain.wrap(
         mean_forward
-        + jnp.sqrt(2.0 * step)
+        + jnp.sqrt(2.0 * dt)
         * jax.random.normal(noise_key, samples.shape, dtype=samples.dtype)
     )
     proposal_energy = potential(proposal)
     proposal_gradient = potential.grad(proposal)
-    mean_reverse = proposal - step * proposal_gradient
+    mean_reverse = proposal - dt * proposal_gradient
     log_forward = _proposal_log_density(
-        proposal, mean_forward, domain, 2.0 * step, images
+        proposal, mean_forward, domain, 2.0 * dt, image_radius
     )
     log_reverse = _proposal_log_density(
-        samples, mean_reverse, domain, 2.0 * step, images
+        samples, mean_reverse, domain, 2.0 * dt, image_radius
     )
     log_alpha = energy - proposal_energy + log_reverse - log_forward
     log_alpha = jnp.where(jnp.isfinite(log_alpha), log_alpha, -jnp.inf)
@@ -147,51 +183,66 @@ def _mixed_mala_chunk(
     potential,
     domain: Mixed_Domain,
     *,
-    step: float = 1e-4,
-    iters: int = 1,
-    images: int = 3,
+    mc_dt: float = 1e-4,
+    mc_steps: int = 1,
+    image_radius: int = 3,
 ) -> tuple[Array, Array]:
     """Compile one fixed-shape MALA chunk; orchestration stays eager."""
 
-    step = positive_real("_mixed_mala_chunk: step", step)
-    iters = integer("_mixed_mala_chunk: iters", iters, 0)
-    images = integer("_mixed_mala_chunk: images", images, 1)
-    keys = jax.random.split(key, iters)
+    mc_dt = positive_real("_mixed_mala_chunk: mc_dt", mc_dt)
+    mc_steps = integer("_mixed_mala_chunk: mc_steps", mc_steps, 0)
+    image_radius = integer("_mixed_mala_chunk: image_radius", image_radius, 1)
+    keys = jax.random.split(key, mc_steps)
 
     def body(state, subkey):
         updated, accepted = mixed_mala_step(
-            subkey, state, potential, domain, step=step, images=images
+            subkey,
+            state,
+            potential,
+            domain,
+            dt=mc_dt,
+            image_radius=image_radius,
         )
         return updated, accepted.astype(updated.dtype).mean()
 
     return jax.lax.scan(body, samples, keys)
 
 
-def _validate_rows_and_chunk(samples: Array, chunk: int) -> int:
+def _validate_rows_and_chunks(samples: Array, chunks: int) -> int:
     if samples.ndim != 2 or samples.shape[0] < 1:
         raise ValueError(f"samples must have shape [N, d] with N >= 1, got {samples.shape}")
-    chunk = integer("chunk", chunk, 1)
-    if chunk > samples.shape[0]:
-        raise ValueError("chunk must lie in [1, sample count]")
-    return chunk
+    chunks = integer("chunks", chunks, 1)
+    if chunks > samples.shape[0]:
+        raise ValueError("chunks must lie in [1, sample count]")
+    return chunks
 
 
+@_legacy_keywords(
+    mc_dt="dt",
+    mc_step="dt",
+    step="dt",
+    mc_steps="steps",
+    mc_iters="steps",
+    iters="steps",
+    images="image_radius",
+    chunk="chunks",
+)
 def mixed_mala(
     key: Array,
     samples: Array,
     potential,
     domain: Mixed_Domain,
     *,
-    step: float = 1e-4,
-    iters: int = 1,
-    images: int = 3,
-    chunk: int = 1,
+    dt: float = 1e-4,
+    steps: int = 1,
+    image_radius: int = 3,
+    chunks: int = 1,
 ) -> tuple[Array, Array]:
     """Run mixed-domain MALA with eager, memory-bounding chunk control.
 
-    ``chunk`` is the number of row partitions, matching :mod:`jflows`.
+    ``chunks`` is the number of row partitions.
     Each partition calls the same small compiled scan and is synchronized
-    before the next one is submitted. Consequently increasing ``chunk``
+    before the next one is submitted. Consequently increasing ``chunks``
     reduces the physical batch held by the compiled molecular graph instead
     of duplicating that graph inside one giant JIT trace.
 
@@ -200,24 +251,25 @@ def mixed_mala(
     custom compiled calculation.
     """
 
-    chunk = _validate_rows_and_chunk(samples, chunk)
+    chunks = _validate_rows_and_chunks(samples, chunks)
     domain._validate(samples, "mixed MALA samples")
-    step = positive_real("mixed_mala: step", step)
-    iters = integer("mixed_mala: iters", iters, 0)
-    images = integer("mixed_mala: images", images, 1)
+    dt = positive_real("mixed_mala: dt", dt)
+    steps = integer("mixed_mala: steps", steps, 0)
+    image_radius = integer("mixed_mala: image_radius", image_radius, 1)
     # Fail before the first (potentially expensive) compilation.
-    error_bound = wrapped_normal_relative_error_bound(step, images)
-    if error_bound > _WRAPPED_RELATIVE_TOLERANCE:
-        raise ValueError(
-            "wrapped-normal image truncation is not certified: "
-            f"relative bound {error_bound:.3e} exceeds "
-            f"{_WRAPPED_RELATIVE_TOLERANCE:.1e}; increase images or reduce step"
-        )
+    if domain.periodic_dim:
+        error_bound = wrapped_normal_relative_error_bound(dt, image_radius)
+        if error_bound > _WRAPPED_RELATIVE_TOLERANCE:
+            raise ValueError(
+                "wrapped-normal image truncation is not certified: "
+                f"relative bound {error_bound:.3e} exceeds "
+                f"{_WRAPPED_RELATIVE_TOLERANCE:.1e}; increase image_radius or reduce dt"
+            )
 
-    parts = jnp.array_split(samples, chunk, axis=0)
+    parts = jnp.array_split(samples, chunks, axis=0)
     # Preserve the original unchunked stream exactly. The multi-chunk path
     # retains its established split-per-part convention.
-    keys = (key,) if chunk == 1 else jax.random.split(key, len(parts))
+    keys = (key,) if chunks == 1 else jax.random.split(key, len(parts))
     outputs, acceptances, sizes = [], [], []
     for part_key, part in zip(keys, parts):
         output, acceptance = _mixed_mala_chunk(
@@ -225,9 +277,9 @@ def mixed_mala(
             part,
             potential,
             domain,
-            step=step,
-            iters=iters,
-            images=images,
+            mc_dt=dt,
+            mc_steps=steps,
+            image_radius=image_radius,
         )
         output, acceptance = jax.block_until_ready((output, acceptance))
         outputs.append(output)
@@ -247,22 +299,32 @@ def _mixed_lbfgs_chunk(
     potential,
     domain: Mixed_Domain,
     *,
-    step: float,
-    iters: int,
+    opt_alpha: float,
+    opt_steps: int,
 ) -> Array:
     """Quench one fixed-shape mixed-domain chunk."""
 
     quenched = lbfgs(
         samples,
         potential,
-        step=step,
-        iters=iters,
+        alpha=opt_alpha,
+        steps=opt_steps,
         armijo=True,
-        chunk=1,
+        chunks=1,
     )
     return domain.wrap(quenched)
 
 
+@_legacy_keywords(
+    opt_step="opt_alpha",
+    opt_iters="opt_steps",
+    step="mc_dt",
+    mc_step="mc_dt",
+    iters="mc_steps",
+    mc_iters="mc_steps",
+    images="mc_image_radius",
+    chunk="chunks",
+)
 def mixed_quench_and_temper(
     key: Array,
     samples: Array,
@@ -270,12 +332,12 @@ def mixed_quench_and_temper(
     domain: Mixed_Domain,
     *,
     melt: float = 0.0,
-    opt_step: float = 1e-2,
-    opt_iters: int = 100,
-    mc_step: float = 1e-3,
-    mc_iters: int = 100,
-    images: int = 3,
-    chunk: int = 1,
+    opt_alpha: float = 1e-2,
+    opt_steps: int = 100,
+    mc_dt: float = 1e-3,
+    mc_steps: int = 100,
+    mc_image_radius: int = 3,
+    chunks: int = 1,
 ) -> tuple[Array, Array]:
     """Construct a mixed-domain quench-and-temper coverage pool.
 
@@ -286,23 +348,24 @@ def mixed_quench_and_temper(
     exact mixed-domain MALA tempering.
     """
 
-    chunk = _validate_rows_and_chunk(samples, chunk)
+    chunks = _validate_rows_and_chunks(samples, chunks)
     domain._validate(samples, "mixed quench-and-temper samples")
     if not math.isfinite(melt) or melt < 0:
         raise ValueError("melt must be nonnegative and finite")
-    opt_step = positive_real("opt_step", opt_step)
-    opt_iters = integer("opt_iters", opt_iters, 0)
-    mc_step = positive_real("mc_step", mc_step)
-    mc_iters = integer("mc_iters", mc_iters, 0)
-    images = integer("images", images, 1)
+    opt_alpha = positive_real("opt_alpha", opt_alpha)
+    opt_steps = integer("opt_steps", opt_steps, 0)
+    mc_dt = positive_real("mc_dt", mc_dt)
+    mc_steps = integer("mc_steps", mc_steps, 0)
+    mc_image_radius = integer("mc_image_radius", mc_image_radius, 1)
     # Validate the wrapped proposal before compiling either expensive kernel.
-    error_bound = wrapped_normal_relative_error_bound(mc_step, images)
-    if error_bound > _WRAPPED_RELATIVE_TOLERANCE:
-        raise ValueError(
-            "wrapped-normal image truncation is not certified: "
-            f"relative bound {error_bound:.3e} exceeds "
-            f"{_WRAPPED_RELATIVE_TOLERANCE:.1e}"
-        )
+    if domain.periodic_dim:
+        error_bound = wrapped_normal_relative_error_bound(mc_dt, mc_image_radius)
+        if error_bound > _WRAPPED_RELATIVE_TOLERANCE:
+            raise ValueError(
+                "wrapped-normal image truncation is not certified: "
+                f"relative bound {error_bound:.3e} exceeds "
+                f"{_WRAPPED_RELATIVE_TOLERANCE:.1e}"
+            )
 
     melt_key, periodic_key, temper_key = jax.random.split(key, 3)
     current = samples
@@ -321,13 +384,13 @@ def mixed_quench_and_temper(
         current = jnp.concatenate((euclidean, periodic), axis=-1)
 
     quenched = []
-    for part in jnp.array_split(current, chunk, axis=0):
+    for part in jnp.array_split(current, chunks, axis=0):
         value = _mixed_lbfgs_chunk(
             part,
             potential,
             domain,
-            step=opt_step,
-            iters=opt_iters,
+            opt_alpha=opt_alpha,
+            opt_steps=opt_steps,
         )
         quenched.append(jax.block_until_ready(value))
     current = jnp.concatenate(quenched, axis=0)
@@ -336,10 +399,10 @@ def mixed_quench_and_temper(
         current,
         potential,
         domain,
-        step=mc_step,
-        iters=mc_iters,
-        images=images,
-        chunk=chunk,
+        dt=mc_dt,
+        steps=mc_steps,
+        image_radius=mc_image_radius,
+        chunks=chunks,
     )
 
 
@@ -358,11 +421,11 @@ def _chunked_bridge_log_weights(
     source,
     target,
     delta: float,
-    chunk: int,
+    chunks: int,
 ) -> Array:
     pieces = []
     coefficient = jnp.asarray(delta, dtype=samples.dtype)
-    for part in jnp.array_split(samples, chunk, axis=0):
+    for part in jnp.array_split(samples, chunks, axis=0):
         value = _bridge_log_weight_chunk(part, source, target, coefficient)
         pieces.append(jax.block_until_ready(value))
     return jnp.concatenate(pieces, axis=0)
@@ -383,16 +446,16 @@ def _potential_space_schedule(
     target,
     levels: tuple[float, ...],
     *,
-    step: float,
-    iters: int,
-    images: int,
+    mc_dt: float,
+    mc_steps: int,
+    mc_image_radius: int,
     domain: Mixed_Domain | None,
-    chunk: int,
+    chunks: int,
 ) -> tuple[Array, Array, Array]:
-    chunk = _validate_rows_and_chunk(samples, chunk)
-    step = positive_real("SMC step", step)
-    iters = integer("SMC iters", iters, 0)
-    images = integer("SMC images", images, 1)
+    chunks = _validate_rows_and_chunks(samples, chunks)
+    mc_dt = positive_real("SMC mc_dt", mc_dt)
+    mc_steps = integer("SMC mc_steps", mc_steps, 0)
+    mc_image_radius = integer("SMC mc_image_radius", mc_image_radius, 1)
     current = samples
     mala_domain = domain if domain is not None else getattr(target, "domain", None)
     if mala_domain is None:
@@ -402,7 +465,7 @@ def _potential_space_schedule(
     previous_value = 0.0
     for level_index, value in enumerate(levels, start=1):
         log_weight = _chunked_bridge_log_weights(
-            current, source, target, value - previous_value, chunk
+            current, source, target, value - previous_value, chunks
         )
         ess = compute_ESS_log(log_weight)
         ess = jax.block_until_ready(jnp.where(jnp.isfinite(ess), ess, 0.0))
@@ -420,35 +483,43 @@ def _potential_space_schedule(
             current,
             bridge,
             mala_domain,
-            step=step,
-            iters=iters,
-            images=images,
-            chunk=chunk,
+            dt=mc_dt,
+            steps=mc_steps,
+            image_radius=mc_image_radius,
+            chunks=chunks,
         )
         acceptance_values.append(acceptance)
         previous_value = value
     return current, jnp.asarray(ess_values), jnp.stack(acceptance_values)
 
 
+@_legacy_keywords(
+    step="mc_dt",
+    mc_step="mc_dt",
+    iters="mc_steps",
+    mc_iters="mc_steps",
+    images="mc_image_radius",
+    chunk="chunks",
+)
 def sequential_monte_carlo(
     key: Array,
     samples: Array,
     source,
     target,
     ladder: int = 1,
-    step: float = 1e-3,
-    iters: int = 100,
-    images: int = 3,
+    mc_dt: float = 1e-3,
+    mc_steps: int = 100,
+    mc_image_radius: int = 3,
     domain: Mixed_Domain | None = None,
-    chunk: int = 1,
+    chunks: int = 1,
 ) -> tuple[Array, Array, Array]:
     """Reweight, resample, and rejuvenate over a uniform potential bridge.
 
-    ``ladder``, ``step``, ``iters``, and ``chunk`` match the corresponding
-    :mod:`jflows` controls. Returns final particles, normalized incremental
+    ``ladder``, ``mc_dt``, ``mc_steps``, and ``chunks`` control the schedule.
+    Returns final particles, normalized incremental
     ESS per ladder level, and molecular MALA acceptance per level/iteration.
     The level and chunk loops remain eager so molecular compilation scales
-    with one physical chunk rather than ``ladder * chunk`` copies.
+    with one physical chunk rather than ``ladder * chunks`` copies.
     """
 
     ladder = integer("ladder", ladder, 1)
@@ -459,25 +530,33 @@ def sequential_monte_carlo(
         source,
         target,
         levels,
-        step=step,
-        iters=iters,
-        images=images,
+        mc_dt=mc_dt,
+        mc_steps=mc_steps,
+        mc_image_radius=mc_image_radius,
         domain=domain,
-        chunk=chunk,
+        chunks=chunks,
     )
 
 
+@_legacy_keywords(
+    step="mc_dt",
+    mc_step="mc_dt",
+    iters="mc_steps",
+    mc_iters="mc_steps",
+    images="mc_image_radius",
+    chunk="chunks",
+)
 def potential_space_smc(
     key: Array,
     samples: Array,
     source,
     target,
     t_list,
-    step: float = 1e-3,
-    iters: int = 100,
-    images: int = 3,
+    mc_dt: float = 1e-3,
+    mc_steps: int = 100,
+    mc_image_radius: int = 3,
     domain: Mixed_Domain | None = None,
-    chunk: int = 1,
+    chunks: int = 1,
 ) -> tuple[Array, Array, Array]:
     """Compatibility SMC interface for an explicit, nonuniform schedule.
 
@@ -503,11 +582,11 @@ def potential_space_smc(
         source,
         target,
         levels,
-        step=step,
-        iters=iters,
-        images=images,
+        mc_dt=mc_dt,
+        mc_steps=mc_steps,
+        mc_image_radius=mc_image_radius,
         domain=domain,
-        chunk=chunk,
+        chunks=chunks,
     )
 
 
@@ -541,11 +620,11 @@ def _chunked_ais_log_weights(
     target: Potential,
     flow,
     scale: float,
-    chunk: int,
+    chunks: int,
 ) -> Array:
     values = []
     coefficient = jnp.asarray(scale, dtype=samples.dtype)
-    for part in jnp.array_split(samples, chunk, axis=0):
+    for part in jnp.array_split(samples, chunks, axis=0):
         value = _ais_log_weight_chunk(
             part, source, target, flow, coefficient
         )
@@ -553,6 +632,14 @@ def _chunked_ais_log_weights(
     return jnp.concatenate(values, axis=0)
 
 
+@_legacy_keywords(
+    step="mc_dt",
+    mc_step="mc_dt",
+    iters="mc_steps",
+    mc_iters="mc_steps",
+    images="mc_image_radius",
+    chunk="chunks",
+)
 def annealed_importance_sampling(
     key: Array,
     samples: Array,
@@ -560,11 +647,11 @@ def annealed_importance_sampling(
     target: Potential,
     flow,
     ladder: int = 1,
-    step: float = 1e-3,
-    iters: int = 100,
-    images: int = 3,
+    mc_dt: float = 1e-3,
+    mc_steps: int = 100,
+    mc_image_radius: int = 3,
     domain: Mixed_Domain | None = None,
-    chunk: int = 1,
+    chunks: int = 1,
     return_initial_log_weights: bool = False,
 ) -> Array | tuple[Array, Array]:
     """Flow-proposal AIS for a molecular inverse flow ``G``.
@@ -580,9 +667,8 @@ def annealed_importance_sampling(
     mixed MALA at the final target. This keeps MCMC score-free in the flow
     rather than differentiating a flow-dependent intermediate.
 
-    The core controls ``ladder``, ``step``, ``iters``, and ``chunk`` have the
-    same names and meanings as in :func:`jflows.utils.annealed_importance_sampling`
-    and :func:`sequential_monte_carlo`. Unlike potential-space SMC, this
+    The core controls ``ladder``, ``mc_dt``, ``mc_steps``, and ``chunks``
+    mirror the molecular SMC interface. Unlike potential-space SMC, this
     target-rejuvenated training sampler is deliberately biased.
 
     Set ``return_initial_log_weights=True`` to also return the full, unscaled
@@ -592,10 +678,10 @@ def annealed_importance_sampling(
     if not isinstance(return_initial_log_weights, bool):
         raise TypeError("return_initial_log_weights must be bool")
     ladder = integer("ladder", ladder, 1)
-    iters = integer("iters", iters, 0)
-    step = positive_real("step", step)
-    images = integer("images", images, 1)
-    chunk = _validate_rows_and_chunk(samples, chunk)
+    mc_steps = integer("mc_steps", mc_steps, 0)
+    mc_dt = positive_real("mc_dt", mc_dt)
+    mc_image_radius = integer("mc_image_radius", mc_image_radius, 1)
+    chunks = _validate_rows_and_chunks(samples, chunks)
     mala_domain = domain
     if mala_domain is None:
         mala_domain = getattr(target, "domain", getattr(flow, "domain", None))
@@ -604,7 +690,7 @@ def annealed_importance_sampling(
     mala_domain._validate(samples, "AIS source samples")
 
     pushed, initial_parts = [], []
-    for part in jnp.array_split(samples, chunk, axis=0):
+    for part in jnp.array_split(samples, chunks, axis=0):
         y_part, initial_part = jax.block_until_ready(
             _initial_flow_proposal_chunk(flow, part, source, target)
         )
@@ -617,7 +703,7 @@ def annealed_importance_sampling(
             log_weight = initial_log_weights / ladder
         else:
             log_weight = _chunked_ais_log_weights(
-                y, source, target, flow, 1.0 / ladder, chunk
+                y, source, target, flow, 1.0 / ladder, chunks
             )
         safe_weight, _ = _linear_weights(log_weight)
         resample_key, mala_key = jax.random.split(
@@ -629,10 +715,10 @@ def annealed_importance_sampling(
             y,
             target,
             mala_domain,
-            step=step,
-            iters=iters,
-            images=images,
-            chunk=chunk,
+            dt=mc_dt,
+            steps=mc_steps,
+            image_radius=mc_image_radius,
+            chunks=chunks,
         )[0]
     if return_initial_log_weights:
         return y, initial_log_weights

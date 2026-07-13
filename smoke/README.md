@@ -53,7 +53,7 @@ small compiled mixed-MALA chunk, and two bounded end-to-end public trainer
 paths:
 
 - `jflows.train.train_forward_KLX_G` on a 36-dimensional periodic toy target;
-- `jflows_md.train.train_molecular_forward_KLX_G` on a synthetic
+- `jflows_md.train.train_forward_KLX_G` on a synthetic
   `R^25 x T^11` target.
 
 Both trainer workloads use float32, 16 source particles, a batch of 8, one

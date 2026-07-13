@@ -4,12 +4,16 @@
 from __future__ import annotations
 
 import os
+import json
+from pathlib import Path
+import tempfile
 
 
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
 import equinox as eqx  # noqa: E402
 import jax  # noqa: E402
+import numpy as np  # noqa: E402
 
 jax.config.update("jax_enable_x64", True)
 
@@ -24,13 +28,14 @@ from jflows.utils import (  # noqa: E402
 )
 from jflows_md.boltzmann import (  # noqa: E402
     _operation_key,
-    molecular_boltzmann_forward_KLX_G,
-    molecular_boltzmann_forward_KLXX_G,
+    boltzmann_forward_KLX_G,
+    boltzmann_forward_KLXX_G,
 )
 from jflows_md.core.domain import Mixed_Domain  # noqa: E402
 from jflows_md.flow import Mixed_NSF  # noqa: E402
 from jflows_md.source import Molecular_Source  # noqa: E402
-from jflows_md.train import train_molecular_forward_KLXX_G  # noqa: E402
+from jflows_md.artifacts import load_mixed_flow  # noqa: E402
+from jflows_md.train import train_forward_KLXX_G  # noqa: E402
 from jflows_md.utils import annealed_importance_sampling  # noqa: E402
 
 
@@ -78,18 +83,96 @@ def main() -> None:
         hidden_features=(8, 8),
     ).zeros()
 
-    particles, stages = molecular_boltzmann_forward_KLX_G(
+    with tempfile.TemporaryDirectory() as nonempty:
+        (Path(nonempty) / "keep.txt").write_text("do not overwrite\n")
+        try:
+            boltzmann_forward_KLX_G(
+                x_valid,
+                source,
+                target,
+                flow,
+                pool_size=16,
+                batch_size=8,
+                train_steps=1,
+                lr=1e-3,
+                ladder=1,
+                mc_dt=1e-3,
+                mc_steps=0,
+                bg_param={"t_safe": 1.0},
+                flow_dir=nonempty,
+            )
+            raise AssertionError("nonempty flow_dir was overwritten")
+        except FileExistsError:
+            pass
+
+    with tempfile.TemporaryDirectory() as temporary:
+        particles, stages = boltzmann_forward_KLX_G(
+            x_valid,
+            source,
+            target,
+            flow,
+            pool_size=16,
+            batch_size=8,
+            train_steps=2,
+            lr=1e-3,
+            ladder=2,
+            mc_dt=1e-3,
+            mc_steps=1,
+            coeff_lambda=1.0,
+            bg_param={
+                "t_safe": 1.0,
+                "tau_smc": 0.0,
+                "tau_ess": 0.0,
+                "max_stages": 1,
+                "max_retry": 1,
+            },
+            e_clip=1000.0,
+            g_clip=100.0,
+            seed=302,
+            flow_dir=temporary,
+        )
+        trained_path = stages[0]["trained_flow_path_hist"][0]
+        selected_path = stages[0]["selected_flow_path"]
+        assert trained_path is not None and selected_path is not None
+        loaded_trained = load_mixed_flow(Path(temporary) / trained_path)
+        loaded_selected = load_mixed_flow(Path(temporary) / selected_path)
+        assert eqx.tree_equal(loaded_trained, stages[0]["flow"]) or (
+            stages[0]["selected"] == "identity"
+        )
+        assert eqx.tree_equal(loaded_selected, stages[0]["flow"])
+        manifest = json.loads(
+            (Path(temporary) / "attempts.json").read_text(encoding="utf-8")
+        )
+        assert manifest["run_state"]["status"] == "complete"
+        assert manifest["attempts"][0]["selected_flow_path"] == selected_path
+        assert manifest["attempts"][0]["valid_selected_ess"] == stages[0][
+            "valid_selected_ess"
+        ]
+        monitor_path = Path(temporary) / manifest["attempts"][0]["monitor_path"]
+        with np.load(monitor_path) as monitor:
+            assert np.array_equal(
+                monitor["batch_ess_hist"], np.asarray(stages[0]["ess_history"])
+            )
+            assert np.array_equal(
+                monitor["kept_fraction_hist"],
+                np.asarray(stages[0]["kept_history"]),
+            )
+            assert np.array_equal(
+                monitor["update_applied_hist"],
+                np.asarray(stages[0]["update_history"]),
+            )
+    plain_particles, plain_stages = boltzmann_forward_KLX_G(
         x_valid,
         source,
         target,
         flow,
-        n_pool=16,
-        n_batch=8,
-        steps=2,
+        pool_size=16,
+        batch_size=8,
+        train_steps=2,
         lr=1e-3,
         ladder=2,
-        mc_step=1e-3,
-        mc_iters=1,
+        mc_dt=1e-3,
+        mc_steps=1,
         coeff_lambda=1.0,
         bg_param={
             "t_safe": 1.0,
@@ -102,20 +185,30 @@ def main() -> None:
         g_clip=100.0,
         seed=302,
     )
+    assert bool(jnp.array_equal(plain_particles, particles))
+    assert eqx.tree_equal(plain_stages[0]["flow"], stages[0]["flow"])
+    assert bool(
+        jnp.array_equal(
+            plain_stages[0]["batch_ess_hist"], stages[0]["batch_ess_hist"]
+        )
+    )
+    assert plain_stages[0]["trained_flow_path_hist"] == (None,)
+    assert plain_stages[0]["selected_flow_path"] is None
     jax.block_until_ready(particles)
 
     assert particles.shape == x_valid.shape
     assert bool(jnp.isfinite(particles).all())
     assert len(stages) == 1 and stages[0]["t"] == 1.0
-    assert stages[0]["ess_samples"] == x_valid.shape[0]
-    assert 0.0 < stages[0]["ess"] <= 1.0
-    assert 0.0 < stages[0]["trained_ess"] <= 1.0
-    assert 0.0 < stages[0]["identity_ess"] <= 1.0
+    assert stages[0]["valid_sample_count"] == x_valid.shape[0]
+    assert 0.0 < stages[0]["valid_selected_ess"] <= 1.0
+    assert 0.0 < stages[0]["valid_trained_ess"] <= 1.0
+    assert 0.0 < stages[0]["valid_identity_ess"] <= 1.0
     assert stages[0]["selected"] in ("trained", "identity")
-    assert stages[0]["ess_history"].shape == (2,)
+    assert stages[0]["t_hist"].shape == (1,)
+    assert stages[0]["batch_ess_hist"].shape == (1, 2)
     assert abs(
-        stages[0]["ess"]
-        - max(stages[0]["trained_ess"], stages[0]["identity_ess"])
+        stages[0]["valid_selected_ess"]
+        - max(stages[0]["valid_trained_ess"], stages[0]["valid_identity_ess"])
     ) < 1e-12
     retired = {
         "selected_checkpoint",
@@ -125,14 +218,14 @@ def main() -> None:
         "checkpoint_labels",
     }
     assert retired.isdisjoint(stages[0])
-    assert stages[0]["kept_history"].shape == (2,)
-    assert stages[0]["update_history"].shape == (2,)
+    assert stages[0]["kept_fraction_hist"].shape == (1, 2)
+    assert stages[0]["update_applied_hist"].shape == (1, 2)
     assert stages[0]["smc_ess"].shape == (2,)
     assert stages[0]["smc_acceptance"].shape == (2, 1)
     assert stages[0]["mala_acceptance"].shape == (1,)
     assert bool(
-        jnp.isfinite(stages[0]["ess_history"]).all()
-        & jnp.isfinite(stages[0]["kept_history"]).all()
+        jnp.isfinite(stages[0]["batch_ess_hist"]).all()
+        & jnp.isfinite(stages[0]["kept_fraction_hist"]).all()
     )
     leaves = eqx.filter(stages[0]["flow"], eqx.is_inexact_array)
     assert all(bool(jnp.isfinite(leaf).all()) for leaf in jax.tree.leaves(leaves))
@@ -144,21 +237,21 @@ def main() -> None:
         transforms=2,
         hidden_features=(8, 8),
     ).zeros()
-    klxx_particles, klxx_stages = molecular_boltzmann_forward_KLXX_G(
+    klxx_particles, klxx_stages = boltzmann_forward_KLXX_G(
         x_valid,
         source,
         target,
         klxx_flow,
-        n_pool=16,
-        n_batch=8,
-        steps=2,
+        pool_size=16,
+        batch_size=8,
+        train_steps=2,
         lr=1e-3,
         ladder=2,
-        mc_step=1e-3,
-        mc_iters=1,
+        mc_dt=1e-3,
+        mc_steps=1,
         melt=0.1,
-        opt_step=1e-2,
-        opt_iters=2,
+        opt_alpha=1e-2,
+        opt_steps=2,
         coeff_lambda=1.0,
         coeff_alpha=0.5,
         coeff_beta=0.5,
@@ -180,16 +273,16 @@ def main() -> None:
     assert len(klxx_stages) == 1 and klxx_stages[0]["t"] == 1.0
     assert klxx_stages[0]["objective"] == "klxx"
     assert abs(
-        klxx_stages[0]["ess"]
+        klxx_stages[0]["valid_selected_ess"]
         - max(
-            klxx_stages[0]["trained_ess"],
-            klxx_stages[0]["identity_ess"],
+            klxx_stages[0]["valid_trained_ess"],
+            klxx_stages[0]["valid_identity_ess"],
         )
     ) < 1e-12
     assert klxx_stages[0]["hat_mala_acceptance"].shape == (1,)
-    assert bool(jnp.isfinite(klxx_stages[0]["ess_history"]).all())
+    assert bool(jnp.isfinite(klxx_stages[0]["batch_ess_hist"]).all())
 
-    zero_mix_flow, zero_mix_ess, _, _ = train_molecular_forward_KLXX_G(
+    zero_mix_flow, zero_mix_ess, _, _ = train_forward_KLXX_G(
         x_valid,
         x_valid,
         x_valid,
@@ -197,12 +290,12 @@ def main() -> None:
         target,
         klxx_flow,
         domain,
-        n_batch=8,
-        steps=1,
+        batch_size=8,
+        train_steps=1,
         lr=1e-3,
         coeff_alpha=0.0,
         coeff_beta=0.0,
-        mc_iters=0,
+        mc_steps=0,
         seed=307,
     )
     jax.block_until_ready((zero_mix_flow, zero_mix_ess))
@@ -294,7 +387,8 @@ def main() -> None:
     )
     print(
         "PASS mixed BG training and G-native score-free AIS: "
-        f"stage_ESS={stages[0]['ess']:.3f} N={stages[0]['ess_samples']}"
+        f"stage_ESS={stages[0]['valid_selected_ess']:.3f} "
+        f"N={stages[0]['valid_sample_count']}"
     )
 
 

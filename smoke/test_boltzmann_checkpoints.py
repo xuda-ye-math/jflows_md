@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import json
 import os
+from pathlib import Path
+import tempfile
 from types import SimpleNamespace
 
 
@@ -50,7 +53,7 @@ def patched_driver(
     *, trainer, identity_weights, importance_weights=None, smc_sampler=None
 ):
     originals = {
-        "train_molecular_forward_KLX_G": bg.train_molecular_forward_KLX_G,
+        "train_forward_KLX_G": bg.train_forward_KLX_G,
         "sequential_monte_carlo": bg.sequential_monte_carlo,
         "mixed_mala": bg.mixed_mala,
         "_importance_weights_g": bg._importance_weights_g,
@@ -59,13 +62,15 @@ def patched_driver(
     }
 
     if smc_sampler is None:
-        def smc_sampler(key, samples, source, target, *, ladder, iters, **kwargs):
+        def smc_sampler(
+            key, samples, source, target, *, ladder, mc_steps, **kwargs
+        ):
             del key, source, target, kwargs
-            return samples, jnp.ones((ladder,)), jnp.ones((ladder, iters))
+            return samples, jnp.ones((ladder,)), jnp.ones((ladder, mc_steps))
 
-    def mala(key, samples, target, domain, *, iters, **kwargs):
+    def mala(key, samples, target, domain, *, steps, **kwargs):
         del key, target, domain, kwargs
-        return samples, jnp.ones((iters,))
+        return samples, jnp.ones((steps,))
 
     if importance_weights is None:
         def importance_weights(samples, source, target, flow, chunk):
@@ -73,7 +78,7 @@ def patched_driver(
             return jnp.zeros((samples.shape[0],), dtype=samples.dtype)
 
     try:
-        bg.train_molecular_forward_KLX_G = trainer
+        bg.train_forward_KLX_G = trainer
         bg.sequential_monte_carlo = smc_sampler
         bg.mixed_mala = mala
         bg._importance_weights_g = importance_weights
@@ -106,18 +111,18 @@ def controls(**overrides):
 
 
 def run_driver(samples, potential, flow, **kwargs):
-    return bg.molecular_boltzmann_forward_KLX_G(
+    return bg.boltzmann_forward_KLX_G(
         samples,
         potential,
         potential,
         flow,
-        n_pool=4,
-        n_batch=2,
-        steps=kwargs.pop("steps", 1),
+        pool_size=4,
+        batch_size=2,
+        train_steps=kwargs.pop("train_steps", 1),
         lr=1e-3,
         ladder=1,
-        mc_step=1e-3,
-        mc_iters=1,
+        mc_dt=1e-3,
+        mc_steps=1,
         **kwargs,
     )
 
@@ -156,7 +161,15 @@ def test_warm_start_and_trained_tie_win() -> None:
     assert seen == [0.0, 1.0], seen
     assert len(stages) == 2 and stages[-1]["t"] == 1.0
     assert all(stage["selected"] == "trained" for stage in stages)
-    assert all(stage["trained_ess"] == stage["identity_ess"] == 1.0 for stage in stages)
+    assert all(
+        stage["valid_trained_ess"] == stage["valid_identity_ess"] == 1.0
+        for stage in stages
+    )
+    assert all(stage["attempt_status_hist"] == ("accepted",) for stage in stages)
+    assert all(
+        bool(jnp.array_equal(stage["t_hist"], jnp.asarray([stage["t"]])))
+        for stage in stages
+    )
     retired = {
         "selected_checkpoint",
         "selected_step",
@@ -192,7 +205,7 @@ def test_only_final_endpoint_is_scored() -> None:
         importance_weights=importance_weights,
     ):
         _, stages = run_driver(
-            samples, potential, flow, steps=2, bg_param=controls()
+            samples, potential, flow, train_steps=2, bg_param=controls()
         )
 
     assert scored == [3.0], scored
@@ -219,15 +232,16 @@ def test_zero_updates_reaches_final_ess_gate() -> None:
             samples,
             potential,
             flow,
-            steps=2,
+            train_steps=2,
             monitor=SimpleNamespace(printer=lines.append),
             bg_param=controls(tau_ess=0.9, max_retry=2),
         )
 
     assert len(calls) == 1
     assert len(stages) == 1 and stages[0]["t"] == 1.0
-    assert stages[0]["ess"] == 1.0 and stages[0]["selected"] == "trained"
-    assert not bool(jnp.any(stages[0]["update_history"]))
+    assert stages[0]["valid_selected_ess"] == 1.0
+    assert stages[0]["selected"] == "trained"
+    assert not bool(jnp.any(stages[0]["update_applied_hist"]))
     assert any("zero optimizer updates" in line for line in lines)
     assert any("validation ESS" in line for line in lines)
     assert not any("training rejected" in line for line in lines)
@@ -257,7 +271,8 @@ def test_identity_rescues_nonfinite_final() -> None:
 
     stage = stages[0]
     assert stage["selected"] == "identity"
-    assert stage["ess"] == 1.0 and stage["trained_ess"] == 0.0
+    assert stage["valid_selected_ess"] == 1.0
+    assert stage["valid_trained_ess"] == 0.0
     assert bool(jnp.isfinite(stage["flow"].shift).all())
     assert any("nonfinite final trained flow" in line for line in lines)
     assert not any("training rejected" in line for line in lines)
@@ -277,11 +292,11 @@ def test_retry_smc_is_diagnostic_after_validation_rejection() -> None:
             jnp.ones((steps,), dtype=bool),
         )
 
-    def smc_sampler(key, pool, source, target, *, ladder, iters, **kwargs):
+    def smc_sampler(key, pool, source, target, *, ladder, mc_steps, **kwargs):
         del key, source, target, kwargs
         smc_calls.append(True)
         ess = 1.0 if len(smc_calls) == 1 else 0.0
-        return pool, jnp.full((ladder,), ess), jnp.ones((ladder, iters))
+        return pool, jnp.full((ladder,), ess), jnp.ones((ladder, mc_steps))
 
     def peaked_identity(samples, source, target, chunk):
         del source, target, chunk
@@ -316,10 +331,50 @@ def test_retry_smc_is_diagnostic_after_validation_rejection() -> None:
 
     assert len(trainer_calls) == 2 and len(smc_calls) == 2
     assert len(stages) == 1 and stages[0]["t"] == 0.7
-    assert stages[0]["ess"] == 1.0
+    assert stages[0]["valid_selected_ess"] == 1.0
+    assert stages[0]["attempt_status_hist"] == ("rejected", "accepted")
+    assert stages[0]["batch_ess_hist"].shape == (2, 1)
+    assert stages[0]["valid_trained_ess_hist"].shape == (2,)
+    assert stages[0]["valid_identity_ess_hist"].shape == (2,)
     assert any("training rejected -> shrink" in line for line in lines)
     assert any("retry SMC ESS=0.000" in line for line in lines)
     assert any("ACCEPTED" in line for line in lines)
+
+
+def test_selection_failure_is_manifested() -> None:
+    samples, potential, flow = common_inputs()
+
+    def trainer(*args, **kwargs):
+        raise AssertionError("training must not start after failed SMC selection")
+
+    def rejecting_smc(key, pool, source, target, *, ladder, mc_steps, **kwargs):
+        del key, source, target, kwargs
+        return pool, jnp.zeros((ladder,)), jnp.ones((ladder, mc_steps))
+
+    with tempfile.TemporaryDirectory() as temporary:
+        with patched_driver(
+            trainer=trainer,
+            identity_weights=zero_identity_weights,
+            smc_sampler=rejecting_smc,
+        ):
+            _, stages = run_driver(
+                samples,
+                potential,
+                flow,
+                flow_dir=temporary,
+                monitor=SimpleNamespace(printer=lambda _: None),
+                bg_param=controls(tau_smc=0.9),
+            )
+        assert stages == []
+        manifest = json.loads(
+            (Path(temporary) / "attempts.json").read_text(encoding="utf-8")
+        )
+        assert manifest["attempts"] == []
+        run_state = manifest["run_state"]
+        assert run_state["status"] == "incomplete"
+        assert run_state["terminal_reason"] == "smc_selection_failed"
+        assert run_state["terminal_stage"] == 1
+        assert 0.0 < run_state["terminal_t"] <= 1.0
 
 
 def main() -> None:
@@ -328,6 +383,7 @@ def main() -> None:
     test_zero_updates_reaches_final_ess_gate()
     test_identity_rescues_nonfinite_final()
     test_retry_smc_is_diagnostic_after_validation_rejection()
+    test_selection_failure_is_manifested()
     print("PASS molecular final-versus-identity and validation-ESS regressions")
 
 

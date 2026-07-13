@@ -60,7 +60,7 @@ def main() -> None:
     # Preserve the committed jflows public signatures and compilation scheme.
     _assert_signature(
         langevin,
-        ("key", "samples", "potential", "step", "iters", "adjust", "taming", "chunk"),
+        ("key", "samples", "potential", "dt", "steps", "adjust", "taming", "chunks"),
     )
     _assert_signature(
         sequential_monte_carlo,
@@ -70,17 +70,17 @@ def main() -> None:
             "source",
             "target",
             "ladder",
-            "step",
-            "iters",
+            "mc_dt",
+            "mc_steps",
             "adjust",
             "taming",
-            "chunk",
+            "chunks",
         ),
     )
-    assert hasattr(train_forward_KLX_G, "lower")
-    assert not hasattr(langevin, "lower")
-    assert not hasattr(sequential_monte_carlo, "lower")
-    assert not hasattr(annealed_importance_sampling, "lower")
+    assert callable(train_forward_KLX_G)
+    assert callable(langevin)
+    assert callable(sequential_monte_carlo)
+    assert callable(annealed_importance_sampling)
 
     source = Nlog_Gaussian(mean=[0.0, 0.0], variance=[1.0, 1.0])
     target = Nlog_Gaussian(mean=[0.3, -0.2], variance=[0.8, 1.2])

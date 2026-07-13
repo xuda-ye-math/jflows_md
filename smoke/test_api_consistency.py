@@ -24,11 +24,15 @@ from jflows_md import (  # noqa: E402
     Molecular_Source,
 )
 from jflows_md.boltzmann import (  # noqa: E402
+    boltzmann_forward_KLX_G,
+    boltzmann_forward_KLXX_G,
     molecular_boltzmann_forward_KLX_G,
     molecular_boltzmann_forward_KLXX_G,
 )
 from jflows_md.core.domain import Mixed_Domain  # noqa: E402
 from jflows_md.train import (  # noqa: E402
+    train_forward_KLX_G,
+    train_forward_KLXX_G,
     train_molecular_forward_KLX_G,
     train_molecular_forward_KLXX_G,
 )
@@ -57,6 +61,28 @@ def main() -> None:
     assert "snapshot_steps" not in inspect.signature(train_molecular_forward_KLXX_G).parameters
     assert "selection_steps" not in inspect.signature(molecular_boltzmann_forward_KLX_G).parameters
     assert "selection_steps" not in inspect.signature(molecular_boltzmann_forward_KLXX_G).parameters
+    assert tuple(inspect.signature(train_forward_KLX_G).parameters)[5:8] == (
+        "batch_size",
+        "train_steps",
+        "lr",
+    )
+    canonical_bg = inspect.signature(boltzmann_forward_KLX_G).parameters
+    for name in (
+        "pool_size",
+        "batch_size",
+        "train_steps",
+        "mc_dt",
+        "mc_steps",
+        "chunks",
+        "mc_image_radius",
+        "flow_dir",
+    ):
+        assert name in canonical_bg
+    assert not any(name.startswith("_") for name in canonical_bg)
+    canonical_klxx = inspect.signature(boltzmann_forward_KLXX_G).parameters
+    assert "opt_alpha" in canonical_klxx and "opt_steps" in canonical_klxx
+    assert train_molecular_forward_KLX_G is not train_forward_KLX_G
+    assert train_molecular_forward_KLXX_G is not train_forward_KLXX_G
     messages = []
     Monitor(1, "[molecular] ", messages.append)._emit(1, -2.0, 0.25)
     assert messages == [

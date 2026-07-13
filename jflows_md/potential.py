@@ -47,11 +47,18 @@ class Molecular_Potential(Potential):
     bundle_path: str = eqx.field(static=True)
     manifest_sha256: str = eqx.field(static=True)
 
-    def __init__(self, bundle: Molecular_Bundle):
+    def __init__(
+        self,
+        bundle: Molecular_Bundle,
+        *,
+        temperature_kelvin: float | None = None,
+    ):
         self.forcefield = Amber_OBC_Force_Field(bundle.system)
         self.coordinates = Internal_Coordinates(bundle.coordinates)
         self.reference_positions_nm = jnp.asarray(bundle.validation["frames_nm"][0])
-        self.temperature_kelvin = float(bundle.manifest["temperature_kelvin"])
+        if temperature_kelvin is None:
+            temperature_kelvin = bundle.manifest["temperature_kelvin"]
+        self.temperature_kelvin = float(temperature_kelvin)
         if not math.isfinite(self.temperature_kelvin) or self.temperature_kelvin <= 0:
             raise ValueError("bundle temperature must be positive and finite")
         self.beta = jnp.asarray(1.0 / (KB_KJ_MOL_K * self.temperature_kelvin))
@@ -69,9 +76,26 @@ class Molecular_Potential(Potential):
 
     @classmethod
     def from_bundle(
-        cls, path_or_name: str | Path, *, verify: bool = True
+        cls,
+        path_or_name: str | Path,
+        *,
+        verify: bool = True,
+        temperature_kelvin: float | None = None,
     ) -> "Molecular_Potential":
-        return cls(Molecular_Bundle.load(path_or_name, verify=verify))
+        """Load bundle mechanics, optionally overriding its target temperature.
+
+        The override changes the inverse-temperature factor multiplying the
+        bundle's physical energy. :meth:`source` also scales the bundle
+        Gaussian's Euclidean variance by ``temperature / bundle_temperature``
+        so source and target temperatures remain matched. It does not mutate
+        the bundle or alter its force field, solvent model, coordinates,
+        periodic-uniform source component, or reference geometry.
+        """
+
+        return cls(
+            Molecular_Bundle.load(path_or_name, verify=verify),
+            temperature_kelvin=temperature_kelvin,
+        )
 
     @property
     def domain(self):
@@ -116,9 +140,31 @@ class Molecular_Potential(Potential):
     def support_mask(self, x: Array) -> Array:
         return self.coordinates.support_mask(x)
 
-    def source(self) -> Molecular_Source:
+    def source(
+        self,
+        *,
+        defensive_weight: float = 0.0,
+        defensive_df: float = 3.0,
+    ) -> Molecular_Source:
+        """Return the source matched to this target's temperature.
+
+        The bundle stores a Gaussian reference at its manifest temperature.
+        Its Euclidean variance follows the harmonic scaling ``variance ~ T``;
+        the mean and uniform periodic component are temperature independent.
+        At the bundle temperature this is exactly the archived source.
+        """
+
         bundle = Molecular_Bundle.load(self.bundle_path, verify=True)
-        return Molecular_Source.from_spec(self.domain, bundle.coordinates)
+        source = Molecular_Source.from_spec(self.domain, bundle.coordinates)
+        bundle_temperature = float(bundle.manifest["temperature_kelvin"])
+        temperature_ratio = self.temperature_kelvin / bundle_temperature
+        return Molecular_Source(
+            self.domain,
+            mean=source.mean,
+            variance=source.variance * temperature_ratio,
+            defensive_weight=defensive_weight,
+            defensive_df=defensive_df,
+        )
 
     def regularized(
         self,
@@ -264,5 +310,5 @@ class _Regularized_Molecular_Potential(Potential):
     def support_mask(self, x: Array) -> Array:
         return self.base.support_mask(x)
 
-    def source(self) -> Molecular_Source:
-        return self.base.source()
+    def source(self, **kwargs) -> Molecular_Source:
+        return self.base.source(**kwargs)

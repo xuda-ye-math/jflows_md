@@ -29,7 +29,10 @@ from jflows_md.train import (  # noqa: E402
 from jflows_md.utils import (  # noqa: E402
     _linear_weights,
     mixed_mala,
+    mixed_mala_step,
+    mixed_quench_and_temper,
     potential_space_smc,
+    sequential_monte_carlo,
     wrapped_normal_relative_error_bound,
 )
 
@@ -53,6 +56,14 @@ def raises(function) -> None:
     except ValueError:
         return
     raise AssertionError("expected ValueError")
+
+
+def raises_type_error(function) -> None:
+    try:
+        function()
+    except TypeError:
+        return
+    raise AssertionError("expected TypeError")
 
 
 def main() -> None:
@@ -149,6 +160,70 @@ def main() -> None:
     raises(lambda: Molecular_Source(domain, mean=[jnp.nan, 0.0]))
     raises(lambda: Molecular_Source(domain, variance=[1.0, jnp.inf]))
     source = Molecular_Source(domain)
+    guarded = Molecular_Source(
+        domain, defensive_weight=0.01, defensive_df=3.0
+    )
+    guarded_samples = guarded.samples(jax.random.key(30), N=4096)
+    assert guarded_samples.shape == (4096, domain.dimension)
+    assert bool(jnp.isfinite(guarded(guarded_samples)).all())
+
+    # The defensive density is a product of independent univariate Student-t
+    # laws, so every Euclidean coordinate needs its own chi-square scale.
+    # Reconstruct the latent draw exactly to prevent a correlated
+    # multivariate-t sampler from silently disagreeing with __call__.
+    latent_source = Molecular_Source(
+        domain, mean=[0.5, -0.25], variance=[2.0, 0.5],
+        defensive_weight=0.75, defensive_df=4.0,
+    )
+    latent_key = jax.random.key(301)
+    latent_n = 32
+    drawn = latent_source.samples(latent_key, N=latent_n)
+    gaussian_key, normal_key, gamma_key, choice_key, torus_key = (
+        jax.random.split(latent_key, 5)
+    )
+    gaussian = latent_source.mean + jnp.sqrt(latent_source.variance) * (
+        jax.random.normal(
+            gaussian_key,
+            (latent_n, domain.euclidean_dim),
+            dtype=latent_source.mean.dtype,
+        )
+    )
+    normal = jax.random.normal(
+        normal_key,
+        (latent_n, domain.euclidean_dim),
+        dtype=latent_source.mean.dtype,
+    )
+    chi_square = 2.0 * jax.random.gamma(
+        gamma_key,
+        latent_source.defensive_df / 2.0,
+        shape=(latent_n, domain.euclidean_dim),
+        dtype=latent_source.mean.dtype,
+    )
+    student = latent_source.mean + jnp.sqrt(latent_source.defensive_scale2) * (
+        normal / jnp.sqrt(chi_square / latent_source.defensive_df)
+    )
+    defensive = jax.random.bernoulli(
+        choice_key, latent_source.defensive_weight, shape=(latent_n, 1)
+    )
+    expected_euclidean = jnp.where(defensive, student, gaussian)
+    expected_periodic = jax.random.uniform(
+        torus_key,
+        (latent_n, domain.periodic_dim),
+        minval=-jnp.pi,
+        maxval=jnp.pi,
+        dtype=latent_source.mean.dtype,
+    )
+    assert bool(
+        jnp.array_equal(
+            drawn, jnp.concatenate((expected_euclidean, expected_periodic), axis=-1)
+        )
+    )
+    far = jnp.asarray([[100.0, -100.0, 0.0]])
+    assert float(guarded(far)[0]) < float(source(far)[0])
+    raises(lambda: Molecular_Source(domain, defensive_weight=-0.1))
+    raises(lambda: Molecular_Source(domain, defensive_weight=1.0))
+    raises(lambda: Molecular_Source(domain, defensive_weight=float("nan")))
+    raises(lambda: Molecular_Source(domain, defensive_weight=0.1, defensive_df=2.0))
     raises(lambda: source.samples(jax.random.key(1), N=1.5))
     raises(lambda: source.samples(jax.random.key(1), N=True))
     raises(lambda: Mixed_NSF(jax.random.key(2), domain, bins=4.0))
@@ -163,6 +238,87 @@ def main() -> None:
 
     samples = source.samples(jax.random.key(3), N=4)
     target = Toy_Potential(domain)
+    # Duplicate detection is based on keyword presence, including when the
+    # canonical spelling is passed explicitly at its exact default value.
+    raises_type_error(
+        lambda: wrapped_normal_relative_error_bound(dt=1e-4, step=1e-4)
+    )
+    raises_type_error(
+        lambda: mixed_mala(
+            jax.random.key(31),
+            samples,
+            target,
+            domain,
+            dt=1e-4,
+            step=1e-4,
+        )
+    )
+    raises_type_error(
+        lambda: sequential_monte_carlo(
+            jax.random.key(32),
+            samples,
+            source,
+            target,
+            mc_dt=1e-3,
+            step=1e-3,
+            domain=domain,
+        )
+    )
+
+    # Wrapped-normal truncation is irrelevant on a pure Euclidean domain.
+    # dt=1 and image_radius=1 deliberately fail the torus certification.
+    euclidean_domain = Mixed_Domain(2, 0)
+    euclidean_source = Molecular_Source(euclidean_domain)
+    euclidean_samples = euclidean_source.samples(jax.random.key(33), N=4)
+    euclidean_target = Toy_Potential(euclidean_domain)
+    assert wrapped_normal_relative_error_bound(dt=1.0, image_radius=1) > 1e-12
+    one_step, one_acceptance = mixed_mala_step(
+        jax.random.key(34),
+        euclidean_samples,
+        euclidean_target,
+        euclidean_domain,
+        dt=1.0,
+        image_radius=1,
+    )
+    moved, acceptance = mixed_mala(
+        jax.random.key(35),
+        euclidean_samples,
+        euclidean_target,
+        euclidean_domain,
+        dt=1.0,
+        steps=1,
+        image_radius=1,
+    )
+    tempered, temper_acceptance = mixed_quench_and_temper(
+        jax.random.key(36),
+        euclidean_samples,
+        euclidean_target,
+        euclidean_domain,
+        opt_steps=0,
+        mc_dt=1.0,
+        mc_steps=1,
+        mc_image_radius=1,
+    )
+    jax.block_until_ready(
+        (
+            one_step,
+            one_acceptance,
+            moved,
+            acceptance,
+            tempered,
+            temper_acceptance,
+        )
+    )
+    assert one_step.shape == moved.shape == euclidean_samples.shape
+    assert one_acceptance.shape == (4,) and acceptance.shape == (1,)
+    assert tempered.shape == euclidean_samples.shape
+    assert temper_acceptance.shape == (1,)
+    assert bool(
+        jnp.isfinite(one_step).all()
+        & jnp.isfinite(moved).all()
+        & jnp.isfinite(tempered).all()
+    )
+
     raises(
         lambda: mixed_mala(
             jax.random.key(4), samples, target, domain, step=float("nan")
@@ -185,7 +341,10 @@ def main() -> None:
         )
     )
     raises(lambda: _bg_parameters({"tau_ess": float("nan")}))
-    raises(lambda: _bg_parameters({"enlarge_factor": 1.0}))
+    assert _bg_parameters({"enlarge_factor": 0.5, "t_tol": 0.0})[
+        "enlarge_factor"
+    ] == 0.5
+    raises(lambda: _bg_parameters({"enlarge_factor": 0.0}))
     raises(lambda: _bg_parameters({"max_retry": True}))
 
     flow = Mixed_NSF(

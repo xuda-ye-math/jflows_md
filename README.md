@@ -22,8 +22,8 @@ JAX and Equinox.
   bundles for FAB-compatible alanine dipeptide (60D), glycerol (36D), and
   neutral diethanolamine (48D).
 - **Molecular sampling.** Mixed-domain MALA, potential-space SMC, and the
-  G-native score-free AIS surrogate use the same `ladder`, `step`, `iters`,
-  and `chunk` conventions as `jflows`.
+  G-native score-free AIS surrogate use explicit `ladder`, `mc_dt`,
+  `mc_steps`, and `chunks` controls.
 - **Boltzmann-generator training.** Molecular forward KL, KL+X, and KL+X+X
   trainers share the adaptive controller, optimizer-only `e_clip`, global
   `g_clip`, standard per-step batch ESS, honest proposal-side stage ESS,
@@ -210,10 +210,9 @@ The public modules mirror the organization of `jflows`:
 - `jflows_md.potential`: `Molecular_Potential`
 - `jflows_md.source`: `Molecular_Source`
 - `jflows_md.system`: `Molecular_Bundle`, `available_bundles`
-- `jflows_md.train`: `train_molecular_forward_KLX_G`,
-  `train_molecular_forward_KLXX_G`
-- `jflows_md.boltzmann`: `molecular_boltzmann_forward_KLX_G`,
-  `molecular_boltzmann_forward_KLXX_G`
+- `jflows_md.train`: `train_forward_KLX_G`, `train_forward_KLXX_G`
+- `jflows_md.boltzmann`: `boltzmann_forward_KLX_G`,
+  `boltzmann_forward_KLXX_G`
 - `jflows_md.artifacts`: exact flow-architecture metadata, source hashing, and
   verified stage loading
 - `jflows_md.utils`: mixed MALA, mixed quench-and-temper, potential-space SMC,
@@ -233,10 +232,17 @@ SMC/AIS, molecular sources, and rematerialized stage training stay here
 because their Euclidean/torus and persistence contracts differ from the
 single-domain routines in `jflows`.
 
+The earlier `train_molecular_*` and `molecular_boltzmann_*` names remain
+compatibility aliases. Canonical controls use `batch_size`, `pool_size`,
+`train_steps`, `mc_dt`, `mc_steps`, `opt_alpha`, `opt_steps`, and `chunks`;
+direct MALA uses `dt`, `steps`, and `image_radius`, while composite drivers
+use `mc_dt`, `mc_steps`, and `mc_image_radius`. The bridge-level count remains
+`ladder`.
+
 The mixed flow follows `jflows` direction conventions. `F` maps source to
 target and `G = F^{-1}` maps target to source. Molecular forward training fixes
 the flow as `G`, so its public driver and AIS surrogate do not accept a
-direction string. Increasing `chunk` means more sequential row partitions and
+direction string. Increasing `chunks` means more sequential row partitions and
 therefore fewer physical samples in each compiled molecular call.
 
 The full-validation stage gate compares exactly two maps: the final trained
@@ -244,6 +250,27 @@ flow and exact identity. The higher proposal ESS is the sole post-training
 stage candidate, and it is accepted only if that ESS clears `tau_ess`. The
 Boolean `checkpoint` argument means JAX backward-pass rematerialization; it
 does not save or select intermediate flow snapshots.
+
+Each accepted stage reports `valid_selected_ess`, `valid_trained_ess`,
+`valid_identity_ess`, and `valid_sample_count`. Attempt-aligned diagnostics
+are stored in `t_hist`, `batch_ess_hist`, `valid_trained_ess_hist`,
+`valid_identity_ess_hist`, and `attempt_status_hist`; molecular optimizer
+screens use `kept_fraction_hist` and `update_applied_hist`. Passing `flow_dir`
+saves every trained attempt, including rejected and identity-losing attempts,
+plus the selected stage flow. `attempts.json` makes terminal failed stages
+discoverable, and `jflows_md.artifacts.load_mixed_flow` reloads an individual
+mixed-flow artifact without a caller-supplied template. Stored paths are
+relative to `flow_dir`, so load one with
+`load_mixed_flow(Path(flow_dir) / stage["selected_flow_path"])`; moving the
+complete directory preserves the manifest. Per-attempt `monitor.npz` files
+store the batch ESS, kept fraction, and update-applied histories.
+
+For transition compatibility only, stage records still expose the retired
+aliases `ess`, `trained_ess`, `identity_ess`, `ess_samples`, `ess_history`,
+`kept_history`, `update_history`, and `imp_history`. New code must use the
+explicit `valid_*` scalars and attempt-aligned `*_hist` arrays above. These
+aliases are derivable, are not part of the canonical schema, and will be
+removed in a future major version.
 
 Potential-space SMC is classical: every ladder level rejuvenates at its
 matching intermediate potential. Flow-proposal AIS instead applies fractional

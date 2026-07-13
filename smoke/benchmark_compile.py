@@ -619,8 +619,8 @@ def _build_operation(cell: Cell):
                     current,
                     model,
                     model.domain,
-                    step=MALA_STEP,
-                    images=MALA_IMAGES,
+                    mc_dt=MALA_STEP,
+                    image_radius=MALA_IMAGES,
                 )
                 return updated, accepted.astype(updated.dtype).mean()
 

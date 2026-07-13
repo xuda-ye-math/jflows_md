@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import shutil
 import tempfile
 
 
@@ -19,9 +20,11 @@ import numpy as np  # noqa: E402
 from jflows_md import (  # noqa: E402
     Mixed_NSF,
     Molecular_Potential,
+    load_mixed_flow,
     load_mixed_flow_stages,
     mixed_flow_metadata,
     package_source_sha256,
+    save_mixed_flow,
 )
 from jflows_md.system import sha256_file  # noqa: E402
 
@@ -101,6 +104,11 @@ def main() -> None:
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
 
+        standalone = root / "standalone.eqx"
+        save_mixed_flow(standalone, default_flow)
+        standalone_loaded = load_mixed_flow(standalone)
+        assert eqx.tree_equal(default_flow, standalone_loaded)
+
         schema1 = root / "schema1"
         schema1_data, _ = write_run(
             schema1, target, default_flow, flow_key, schema_version=1
@@ -137,6 +145,81 @@ def main() -> None:
         np.testing.assert_allclose(
             actual_inverse_ladj, expected_inverse_ladj, rtol=0, atol=0
         )
+
+        balanced_flow = Mixed_NSF(
+            flow_key,
+            target.domain,
+            bins=4,
+            transforms=2,
+            hidden_features=(8, 8),
+            mask_strategy="balanced",
+        )
+        balanced = root / "balanced"
+        write_run(balanced, target, balanced_flow, flow_key, schema_version=2)
+        _, loaded_balanced = load_mixed_flow_stages(balanced)
+        assert loaded_balanced[0].mask_strategy == "balanced"
+        assert eqx.tree_equal(balanced_flow, loaded_balanced[0])
+
+        explicit_mask = np.zeros(
+            (2, target.domain.dimension), dtype=bool
+        )
+        explicit_mask[0, ::2] = True
+        explicit_mask[1, 1::2] = True
+        assert not np.array_equal(
+            explicit_mask,
+            mixed_flow_metadata(default_flow)["condition_mask"],
+        )
+        explicit_flow = Mixed_NSF(
+            flow_key,
+            target.domain,
+            bins=4,
+            transforms=2,
+            hidden_features=(8, 8),
+            condition_mask=explicit_mask,
+        )
+        explicit = root / "explicit_mask"
+        write_run(explicit, target, explicit_flow, flow_key, schema_version=2)
+        _, loaded_explicit = load_mixed_flow_stages(explicit)
+        assert eqx.tree_equal(explicit_flow, loaded_explicit[0])
+        explicit_y, explicit_ladj = explicit_flow.call_and_ladj(samples)
+        loaded_y, loaded_ladj = loaded_explicit[0].call_and_ladj(samples)
+        np.testing.assert_allclose(loaded_y, explicit_y, rtol=0, atol=0)
+        np.testing.assert_allclose(loaded_ladj, explicit_ladj, rtol=0, atol=0)
+
+        local_bundle = root / "local_bundle"
+        shutil.copytree(target.bundle_path, local_bundle)
+        relative = root / "relative"
+        write_run(
+            relative,
+            target,
+            balanced_flow,
+            flow_key,
+            schema_version=2,
+            overrides={"bundle": np.asarray("../local_bundle")},
+        )
+        relative_target, relative_flows = load_mixed_flow_stages(relative)
+        assert Path(relative_target.bundle_path) == local_bundle.resolve()
+        assert eqx.tree_equal(balanced_flow, relative_flows[0])
+
+        legacy_random = root / "legacy_random"
+        write_run(
+            legacy_random,
+            target,
+            tanh_flow,
+            flow_key,
+            schema_version=2,
+            overrides={"mask_strategy": np.asarray("random")},
+        )
+        legacy_data = dict(np.load(legacy_random / "data.npz", allow_pickle=False))
+        legacy_data.pop("mask_strategy")
+        legacy_data.pop("condition_mask")
+        np.savez_compressed(legacy_random / "data.npz", **legacy_data)
+        marker = json.loads((legacy_random / "COMPLETE.json").read_text())
+        marker["data_sha256"] = sha256_file(legacy_random / "data.npz")
+        (legacy_random / "COMPLETE.json").write_text(json.dumps(marker), encoding="utf-8")
+        _, loaded_legacy_random = load_mixed_flow_stages(legacy_random)
+        assert loaded_legacy_random[0].mask_strategy == "random"
+        assert eqx.tree_equal(tanh_flow, loaded_legacy_random[0])
 
         legacy_name = root / "legacy_name"
         write_run(
@@ -176,19 +259,20 @@ def main() -> None:
         )
         expect_rejected(forged_legacy, "source hashes do not match")
 
-        metadata = mixed_flow_metadata(tanh_flow)
-        wrong_mask = np.asarray(metadata["condition_mask"]).copy()
-        wrong_mask[0, 0] = ~wrong_mask[0, 0]
-        mismatched = root / "mismatched"
+        invalid_mask = np.asarray(
+            mixed_flow_metadata(tanh_flow)["condition_mask"]
+        ).copy()
+        invalid_mask[0] = True
+        invalid = root / "invalid_mask"
         write_run(
-            mismatched,
+            invalid,
             target,
             tanh_flow,
             flow_key,
             schema_version=2,
-            overrides={"condition_mask": wrong_mask},
+            overrides={"condition_mask": invalid_mask},
         )
-        expect_rejected(mismatched, "coupling mask")
+        expect_rejected(invalid, "condition_mask")
 
         unknown = root / "unknown"
         write_run(
