@@ -63,9 +63,9 @@ def main() -> None:
         samples,
         target,
         target.domain,
-        step=1e-8,
-        iters=1,
-        chunk=2,
+        dt=1e-8,
+        steps=1,
+        chunks=2,
     )
     jax.block_until_ready((moved, acceptance))
     mala_s = time.perf_counter() - started

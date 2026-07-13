@@ -24,8 +24,8 @@ class Internal_Coordinates(eqx.Module):
     of ``angle/pi``, and ordinary torsions remain periodic. An optional chiral
     torsion is replaced by ``tau = sign*pi*sigmoid(eta)``. Current schema-2
     bundles use the standard Cartesian configurational measure after
-    quotienting rigid translations and rotations. Explicit legacy schema-1
-    bundles remain readable with their historical canonical gauge-slice
+    quotienting rigid translations and rotations. Explicit schema-1 bundles
+    remain readable with their historical canonical gauge-slice
     measure.
     """
 
@@ -202,7 +202,7 @@ class Internal_Coordinates(eqx.Module):
             bat = jnp.sum(2.0 * jnp.log(bonds), axis=-1)
             bat = bat + jnp.sum(log_sin, axis=-1)
         else:
-            # Legacy schema-1 measure induced on the canonical gauge slice.
+            # Schema-1 measure induced on the canonical gauge slice.
             # It remains readable for explicit old bundles but is not used by
             # the current physical-target bundles.
             bat = jnp.log(bonds[:, 1])

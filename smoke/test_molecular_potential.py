@@ -65,18 +65,18 @@ def check_rigid_motion_quotient_jacobian(bundle: Molecular_Bundle) -> None:
     _, autodiff = jnp.linalg.slogdet(jacobian)
     np.testing.assert_allclose(reported, autodiff, rtol=0, atol=1e-11)
 
-    legacy_spec = dict(spec)
-    legacy_spec["schema_version"] = 1
-    legacy_spec.pop("jacobian_measure")
-    legacy = Internal_Coordinates(legacy_spec)
-    legacy_logdet = legacy.to_cartesian(q)[1][0]
+    schema1_spec = dict(spec)
+    schema1_spec["schema_version"] = 1
+    schema1_spec.pop("jacobian_measure")
+    schema1_coordinates = Internal_Coordinates(schema1_spec)
+    schema1_logdet = schema1_coordinates.to_cartesian(q)[1][0]
     bonds, angles, _, _, _, _ = coordinates._decode(q)
     anchor = (
         2.0 * jnp.log(bonds[0, 0])
         + jnp.log(bonds[0, 1])
         + jnp.log(jnp.sin(angles[0, 0]))
     )
-    np.testing.assert_allclose(reported - legacy_logdet, anchor, rtol=0, atol=1e-12)
+    np.testing.assert_allclose(reported - schema1_logdet, anchor, rtol=0, atol=1e-12)
 
 
 def check_regularized_potential() -> None:

@@ -96,10 +96,10 @@ def main() -> None:
 
     for direction in ("F", "G"):
         full = importance_weights_log(
-            samples, source, target, flow, direction, chunk=1
+            samples, source, target, flow, direction, chunks=1
         )
         chunked = importance_weights_log(
-            samples, source, target, flow, direction, chunk=4
+            samples, source, target, flow, direction, chunks=4
         )
         assert bool(jnp.allclose(chunked, full, rtol=1e-5, atol=1e-5))
 
@@ -109,10 +109,10 @@ def main() -> None:
         source,
         target,
         ladder=2,
-        step=1e-3,
-        iters=1,
+        mc_dt=1e-3,
+        mc_steps=1,
         adjust=False,
-        chunk=2,
+        chunks=2,
     )
     assert particles.shape == samples.shape and level_ess.shape == (2,)
     assert bool(jnp.isfinite(particles).all() & jnp.isfinite(level_ess).all())
@@ -125,10 +125,10 @@ def main() -> None:
         flow,
         "G",
         ladder=2,
-        step=1e-3,
-        iters=1,
+        mc_dt=1e-3,
+        mc_steps=1,
         adjust=False,
-        chunk=2,
+        chunks=2,
     )
     assert proposed.shape == samples.shape and bool(jnp.isfinite(proposed).all())
 
@@ -137,12 +137,12 @@ def main() -> None:
         source,
         target,
         flow,
-        n_batch=4,
-        steps=1,
+        batch_size=4,
+        train_steps=1,
         lr=1e-3,
         ladder=1,
-        mc_step=1e-3,
-        mc_iters=1,
+        mc_dt=1e-3,
+        mc_steps=1,
         coeff_lambda=1.0,
         mc_adjust=False,
         seed=5,

@@ -125,15 +125,8 @@ class Molecular_Source(Potential):
         )
         return -log_density
 
-    def samples(self, key: Array, N: int | None = None, *, n: int | None = None) -> Array:
-        """Draw samples; ``n=`` remains as a compatibility alias for ``N=``."""
-
-        if N is None:
-            N = n
-        elif n is not None:
-            raise ValueError("pass only one of N or n")
-        if N is None:
-            raise TypeError("missing required sample count N")
+    def samples(self, key: Array, N: int) -> Array:
+        """Draw ``N`` samples from the mixed-domain source."""
         if isinstance(N, bool):
             raise ValueError("N must be a positive integer, not a boolean")
         try:

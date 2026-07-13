@@ -18,7 +18,11 @@ import numpy as np
 from .flow import Mixed_NSF
 from .core.domain import Mixed_Domain
 from .potential import Molecular_Potential
-from .system import _manifest_matches_bundle_name, sha256_file
+from .system import (
+    _artifact_bundle_name,
+    _manifest_matches_bundle_name,
+    sha256_file,
+)
 
 
 __all__ = [
@@ -36,9 +40,9 @@ _ACTIVATIONS = {
 }
 
 # Exact package digest at public commit deac775, immediately before the
-# reviewed bundle-name migration. It is accepted only together with a known
-# legacy bundle name and its old frozen manifest hash.
-_LEGACY_SCHEMA2_SOURCE_SHA256 = {
+# reviewed bundle-name migration. It is accepted only together with the
+# corresponding frozen artifact name and manifest hash.
+_MIGRATED_SCHEMA2_SOURCE_SHA256 = {
     "11c26e119d9f7d19bbe04444da56c3577ed32abad0477749406c75d35a0a618c"
 }
 
@@ -321,7 +325,7 @@ def load_mixed_flow_stages(
             "bundle/source revision"
         )
     if target is None:
-        bundle_reference: str | Path = bundle
+        bundle_reference: str | Path = _artifact_bundle_name(bundle)
         saved_path = Path(bundle).expanduser()
         if not saved_path.is_absolute():
             local_path = (path / saved_path).resolve()
@@ -335,7 +339,7 @@ def load_mixed_flow_stages(
         raise ValueError(
             "saved flow and molecular target use different bundle manifests"
         )
-    migrated_legacy_manifest = manifest_sha256 != target.manifest_sha256
+    migrated_name_manifest = manifest_sha256 != target.manifest_sha256
     if verify:
         current_hashes = {
             "jflows": package_source_sha256("jflows"),
@@ -347,9 +351,9 @@ def load_mixed_flow_stages(
         }
         reviewed_name_migration = (
             schema_version == 2
-            and migrated_legacy_manifest
+            and migrated_name_manifest
             and saved_hashes["jflows"] == current_hashes["jflows"]
-            and saved_hashes["jflows_md"] in _LEGACY_SCHEMA2_SOURCE_SHA256
+            and saved_hashes["jflows_md"] in _MIGRATED_SCHEMA2_SOURCE_SHA256
         )
         if current_hashes != saved_hashes and not reviewed_name_migration:
             raise ValueError(

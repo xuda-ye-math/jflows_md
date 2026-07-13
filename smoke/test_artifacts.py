@@ -201,29 +201,33 @@ def main() -> None:
         assert Path(relative_target.bundle_path) == local_bundle.resolve()
         assert eqx.tree_equal(balanced_flow, relative_flows[0])
 
-        legacy_random = root / "legacy_random"
+        historical_random = root / "historical_random"
         write_run(
-            legacy_random,
+            historical_random,
             target,
             tanh_flow,
             flow_key,
             schema_version=2,
             overrides={"mask_strategy": np.asarray("random")},
         )
-        legacy_data = dict(np.load(legacy_random / "data.npz", allow_pickle=False))
-        legacy_data.pop("mask_strategy")
-        legacy_data.pop("condition_mask")
-        np.savez_compressed(legacy_random / "data.npz", **legacy_data)
-        marker = json.loads((legacy_random / "COMPLETE.json").read_text())
-        marker["data_sha256"] = sha256_file(legacy_random / "data.npz")
-        (legacy_random / "COMPLETE.json").write_text(json.dumps(marker), encoding="utf-8")
-        _, loaded_legacy_random = load_mixed_flow_stages(legacy_random)
-        assert loaded_legacy_random[0].mask_strategy == "random"
-        assert eqx.tree_equal(tanh_flow, loaded_legacy_random[0])
+        historical_data = dict(
+            np.load(historical_random / "data.npz", allow_pickle=False)
+        )
+        historical_data.pop("mask_strategy")
+        historical_data.pop("condition_mask")
+        np.savez_compressed(historical_random / "data.npz", **historical_data)
+        marker = json.loads((historical_random / "COMPLETE.json").read_text())
+        marker["data_sha256"] = sha256_file(historical_random / "data.npz")
+        (historical_random / "COMPLETE.json").write_text(
+            json.dumps(marker), encoding="utf-8"
+        )
+        _, loaded_historical_random = load_mixed_flow_stages(historical_random)
+        assert loaded_historical_random[0].mask_strategy == "random"
+        assert eqx.tree_equal(tanh_flow, loaded_historical_random[0])
 
-        legacy_name = root / "legacy_name"
+        migrated_name = root / "migrated_name"
         write_run(
-            legacy_name,
+            migrated_name,
             target,
             tanh_flow,
             flow_key,
@@ -238,13 +242,13 @@ def main() -> None:
                 ),
             },
         )
-        migrated_target, migrated_flows = load_mixed_flow_stages(legacy_name)
+        migrated_target, migrated_flows = load_mixed_flow_stages(migrated_name)
         assert migrated_target.bundle_name == "glycerol_gaff2_am1bcc_obc1"
         assert eqx.tree_equal(tanh_flow, migrated_flows[0])
 
-        forged_legacy = root / "forged_legacy"
+        forged_migration = root / "forged_migration"
         write_run(
-            forged_legacy,
+            forged_migration,
             target,
             tanh_flow,
             flow_key,
@@ -257,7 +261,7 @@ def main() -> None:
                 "jflows_md_source_sha256": "0" * 64,
             },
         )
-        expect_rejected(forged_legacy, "source hashes do not match")
+        expect_rejected(forged_migration, "source hashes do not match")
 
         invalid_mask = np.asarray(
             mixed_flow_metadata(tanh_flow)["condition_mask"]

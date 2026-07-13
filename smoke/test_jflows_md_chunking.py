@@ -70,7 +70,7 @@ def main() -> None:
 
     single_key = jax.random.key(101)
     single_result = mixed_mala(
-        single_key, initial, target, domain, step=1e-2, iters=2, chunk=1
+        single_key, initial, target, domain, dt=1e-2, steps=2, chunks=1
     )
     single_manual = _mixed_mala_chunk(
         single_key,
@@ -89,7 +89,7 @@ def main() -> None:
 
     key = jax.random.key(11)
     result, acceptance = mixed_mala(
-        key, initial, target, domain, step=1e-2, iters=2, chunk=3
+        key, initial, target, domain, dt=1e-2, steps=2, chunks=3
     )
     parts = jnp.array_split(initial, 3, axis=0)
     keys = jax.random.split(key, 3)
@@ -117,9 +117,9 @@ def main() -> None:
         source,
         target,
         ladder=2,
-        step=1e-2,
-        iters=1,
-        chunk=3,
+        mc_dt=1e-2,
+        mc_steps=1,
+        chunks=3,
     )
     explicit = potential_space_smc(
         jax.random.key(12),
@@ -127,9 +127,9 @@ def main() -> None:
         source,
         target,
         t_list=(0.5, 1.0),
-        step=1e-2,
-        iters=1,
-        chunk=3,
+        mc_dt=1e-2,
+        mc_steps=1,
+        chunks=3,
     )
     jax.block_until_ready((uniform, explicit))
     assert all(bool(jnp.array_equal(left, right)) for left, right in zip(uniform, explicit))
@@ -143,9 +143,9 @@ def main() -> None:
         target,
         identity,
         ladder=2,
-        step=1e-2,
-        iters=1,
-        chunk=3,
+        mc_dt=1e-2,
+        mc_steps=1,
+        chunks=3,
     )
     assert ais.shape == initial.shape and bool(jnp.isfinite(ais).all())
     manual_ais = identity.inv(initial)
@@ -167,9 +167,9 @@ def main() -> None:
             manual_ais,
             target,
             domain,
-            step=1e-2,
-            iters=1,
-            chunk=3,
+            dt=1e-2,
+            steps=1,
+            chunks=3,
         )[0]
     assert bool(jnp.array_equal(ais, manual_ais))
 
@@ -179,9 +179,9 @@ def main() -> None:
         source,
         target,
         ladder=2,
-        step=1e-2,
-        iters=1,
-        chunk=3,
+        mc_dt=1e-2,
+        mc_steps=1,
+        chunks=3,
     )[0]
     assert float(jnp.max(jnp.abs(ais - classical_smc))) > 1e-6
 
@@ -192,13 +192,13 @@ def main() -> None:
                 initial,
                 target,
                 domain,
-                step=1e-2,
-                chunk=bad_chunk,
+                dt=1e-2,
+                chunks=bad_chunk,
             )
         except ValueError:
             pass
         else:
-            raise AssertionError(f"chunk={bad_chunk} must fail")
+            raise AssertionError(f"chunks={bad_chunk} must fail")
     print("PASS jflows_md eager SMC and score-free target-rejuvenated AIS")
 
 

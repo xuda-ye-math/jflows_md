@@ -9,7 +9,6 @@ import these utilities rather than maintaining separate sampler modules.
 from __future__ import annotations
 
 import math
-from functools import wraps
 
 import equinox as eqx
 import jax
@@ -40,36 +39,6 @@ __all__ = [
 _WRAPPED_RELATIVE_TOLERANCE = 1e-12
 
 
-def _legacy_keywords(**aliases: str):
-    """Translate retired keywords before Python binds canonical arguments.
-
-    Presence, rather than a comparison with the canonical default, detects a
-    duplicate.  This means ``dt=1e-4, step=1e-4`` is rejected even though both
-    spellings carry the default value.  Positional calls retain their original
-    binding, and :func:`inspect.signature` sees the canonical signature through
-    :func:`functools.wraps`.
-    """
-
-    def decorate(function):
-        @wraps(function)
-        def wrapped(*args, **kwargs):
-            for old, new in aliases.items():
-                if old not in kwargs:
-                    continue
-                if new in kwargs:
-                    raise TypeError(
-                        f"{function.__name__}() received both {new!r} and its "
-                        f"retired alias {old!r}"
-                    )
-                kwargs[new] = kwargs.pop(old)
-            return function(*args, **kwargs)
-
-        return wrapped
-
-    return decorate
-
-
-@_legacy_keywords(mc_dt="dt", mc_step="dt", step="dt", images="image_radius")
 def wrapped_normal_relative_error_bound(
     dt: float = 1e-4,
     image_radius: int = 3,
@@ -92,8 +61,12 @@ def wrapped_normal_relative_error_bound(
     return 2.0 * math.exp(exponent) / (1.0 - ratio)
 
 
-def _wrapped_log_kernel(delta: Array, variance: float, images: int) -> Array:
-    shifts = 2.0 * jnp.pi * jnp.arange(-images, images + 1, dtype=delta.dtype)
+def _wrapped_log_kernel(
+    delta: Array, variance: float, image_radius: int
+) -> Array:
+    shifts = 2.0 * jnp.pi * jnp.arange(
+        -image_radius, image_radius + 1, dtype=delta.dtype
+    )
     terms = -(delta[..., None] + shifts) ** 2 / (2.0 * variance)
     return jnp.sum(logsumexp(terms, axis=-1), axis=-1)
 
@@ -103,7 +76,7 @@ def _proposal_log_density(
     mean: Array,
     domain: Mixed_Domain,
     variance: float,
-    images: int,
+    image_radius: int,
 ) -> Array:
     euclidean_delta = (
         destination[:, : domain.euclidean_dim] - mean[:, : domain.euclidean_dim]
@@ -117,11 +90,12 @@ def _proposal_log_density(
         # Center the truncated image sum on the shortest torus displacement.
         # The drifted proposal mean itself need not lie in the principal box.
         periodic_delta = jnp.mod(periodic_delta + jnp.pi, 2.0 * jnp.pi) - jnp.pi
-        value = value + _wrapped_log_kernel(periodic_delta, variance, images)
+        value = value + _wrapped_log_kernel(
+            periodic_delta, variance, image_radius
+        )
     return value
 
 
-@_legacy_keywords(mc_dt="dt", mc_step="dt", step="dt", images="image_radius")
 def mixed_mala_step(
     key: Array,
     samples: Array,
@@ -217,16 +191,6 @@ def _validate_rows_and_chunks(samples: Array, chunks: int) -> int:
     return chunks
 
 
-@_legacy_keywords(
-    mc_dt="dt",
-    mc_step="dt",
-    step="dt",
-    mc_steps="steps",
-    mc_iters="steps",
-    iters="steps",
-    images="image_radius",
-    chunk="chunks",
-)
 def mixed_mala(
     key: Array,
     samples: Array,
@@ -315,16 +279,6 @@ def _mixed_lbfgs_chunk(
     return domain.wrap(quenched)
 
 
-@_legacy_keywords(
-    opt_step="opt_alpha",
-    opt_iters="opt_steps",
-    step="mc_dt",
-    mc_step="mc_dt",
-    iters="mc_steps",
-    mc_iters="mc_steps",
-    images="mc_image_radius",
-    chunk="chunks",
-)
 def mixed_quench_and_temper(
     key: Array,
     samples: Array,
@@ -493,14 +447,6 @@ def _potential_space_schedule(
     return current, jnp.asarray(ess_values), jnp.stack(acceptance_values)
 
 
-@_legacy_keywords(
-    step="mc_dt",
-    mc_step="mc_dt",
-    iters="mc_steps",
-    mc_iters="mc_steps",
-    images="mc_image_radius",
-    chunk="chunks",
-)
 def sequential_monte_carlo(
     key: Array,
     samples: Array,
@@ -538,14 +484,6 @@ def sequential_monte_carlo(
     )
 
 
-@_legacy_keywords(
-    step="mc_dt",
-    mc_step="mc_dt",
-    iters="mc_steps",
-    mc_iters="mc_steps",
-    images="mc_image_radius",
-    chunk="chunks",
-)
 def potential_space_smc(
     key: Array,
     samples: Array,
@@ -558,7 +496,7 @@ def potential_space_smc(
     domain: Mixed_Domain | None = None,
     chunks: int = 1,
 ) -> tuple[Array, Array, Array]:
-    """Compatibility SMC interface for an explicit, nonuniform schedule.
+    """SMC interface for an explicit, nonuniform potential-space schedule.
 
     ``t_list`` contains the positive bridge coefficients to visit, in
     strictly increasing order. It may end below one for a deliberately
@@ -632,14 +570,6 @@ def _chunked_ais_log_weights(
     return jnp.concatenate(values, axis=0)
 
 
-@_legacy_keywords(
-    step="mc_dt",
-    mc_step="mc_dt",
-    iters="mc_steps",
-    mc_iters="mc_steps",
-    images="mc_image_radius",
-    chunk="chunks",
-)
 def annealed_importance_sampling(
     key: Array,
     samples: Array,
@@ -725,6 +655,6 @@ def annealed_importance_sampling(
     return y
 
 
-# jflows-compatible short names plus the earlier companion compatibility name.
+# Short names shared with :mod:`jflows.utils`.
 smc = sequential_monte_carlo
 ais = annealed_importance_sampling

@@ -102,9 +102,9 @@ def main() -> None:
         initial,
         target,
         domain,
-        step=1e-2,
-        iters=3,
-        chunk=2,
+        dt=1e-2,
+        steps=3,
+        chunks=2,
     )
     jax.block_until_ready((result, acceptance))
     assert result.shape == initial.shape and acceptance.shape == (3,)
@@ -117,9 +117,9 @@ def main() -> None:
         initial,
         target,
         domain,
-        step=1e-2,
-        iters=0,
-        chunk=2,
+        dt=1e-2,
+        steps=0,
+        chunks=2,
     )
     assert bool(jnp.array_equal(unchanged, initial))
     assert empty_acceptance.shape == (0,)
@@ -132,8 +132,8 @@ def main() -> None:
         source,
         target,
         ladder=2,
-        step=1e-2,
-        iters=2,
+        mc_dt=1e-2,
+        mc_steps=2,
     )
     jax.block_until_ready((particles, ess, smc_acceptance))
     assert particles.shape == initial.shape
@@ -153,10 +153,10 @@ def main() -> None:
         invalid_target,
         identity,
         ladder=2,
-        step=1e-2,
-        iters=0,
+        mc_dt=1e-2,
+        mc_steps=0,
         domain=domain,
-        chunk=2,
+        chunks=2,
         return_initial_log_weights=True,
     )
     assert bool(jnp.isneginf(invalid_initial_weight).all())

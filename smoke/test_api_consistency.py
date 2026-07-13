@@ -13,6 +13,9 @@ import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
 import jflows  # noqa: E402
 import jflows_md  # noqa: E402
+import jflows_md.boltzmann as md_boltzmann  # noqa: E402
+import jflows_md.train as md_train  # noqa: E402
+import jflows_md.utils as md_utils  # noqa: E402
 from jflows.flow import (  # noqa: E402
     CircularRQSTransform,
     MonotonicRQSTransform,
@@ -26,15 +29,11 @@ from jflows_md import (  # noqa: E402
 from jflows_md.boltzmann import (  # noqa: E402
     boltzmann_forward_KLX_G,
     boltzmann_forward_KLXX_G,
-    molecular_boltzmann_forward_KLX_G,
-    molecular_boltzmann_forward_KLXX_G,
 )
 from jflows_md.core.domain import Mixed_Domain  # noqa: E402
 from jflows_md.train import (  # noqa: E402
     train_forward_KLX_G,
     train_forward_KLXX_G,
-    train_molecular_forward_KLX_G,
-    train_molecular_forward_KLXX_G,
 )
 
 
@@ -48,19 +47,61 @@ def expect_value_error(fn) -> None:
 
 def main() -> None:
     assert jflows.__file__ != jflows_md.__file__
+    retired_wrappers = {
+        "train_molecular_forward_KLX_G",
+        "train_molecular_forward_KLXX_G",
+        "molecular_boltzmann_forward_KLX_G",
+        "molecular_boltzmann_forward_KLXX_G",
+    }
+    assert retired_wrappers.isdisjoint(jflows_md.__all__)
+    assert all(not hasattr(jflows_md, name) for name in retired_wrappers)
+    assert all(not hasattr(md_train, name) for name in retired_wrappers)
+    assert all(not hasattr(md_boltzmann, name) for name in retired_wrappers)
+    retired_keywords = {
+        "step",
+        "iters",
+        "chunk",
+        "mc_step",
+        "mc_iters",
+        "opt_step",
+        "opt_iters",
+        "images",
+        "n_batch",
+        "n_pool",
+        "n",
+    }
+    canonical_functions = (
+        md_utils.wrapped_normal_relative_error_bound,
+        md_utils.mixed_mala_step,
+        md_utils.mixed_mala,
+        md_utils.mixed_quench_and_temper,
+        md_utils.sequential_monte_carlo,
+        md_utils.potential_space_smc,
+        md_utils.annealed_importance_sampling,
+        train_forward_KLX_G,
+        train_forward_KLXX_G,
+        boltzmann_forward_KLX_G,
+        boltzmann_forward_KLXX_G,
+        Molecular_Source.samples,
+    )
+    for function in canonical_functions:
+        assert retired_keywords.isdisjoint(inspect.signature(function).parameters)
+    assert not hasattr(md_utils, "_legacy_keywords")
+    assert md_utils.smc is md_utils.sequential_monte_carlo
+    assert md_utils.ais is md_utils.annealed_importance_sampling
     assert all(value is not None for value in (
         Transform,
         CircularRQSTransform,
         MonotonicRQSTransform,
     ))
-    assert "checkpoint" in inspect.signature(train_molecular_forward_KLX_G).parameters
-    assert "checkpoint" in inspect.signature(molecular_boltzmann_forward_KLX_G).parameters
-    assert "checkpoint" in inspect.signature(train_molecular_forward_KLXX_G).parameters
-    assert "checkpoint" in inspect.signature(molecular_boltzmann_forward_KLXX_G).parameters
-    assert "snapshot_steps" not in inspect.signature(train_molecular_forward_KLX_G).parameters
-    assert "snapshot_steps" not in inspect.signature(train_molecular_forward_KLXX_G).parameters
-    assert "selection_steps" not in inspect.signature(molecular_boltzmann_forward_KLX_G).parameters
-    assert "selection_steps" not in inspect.signature(molecular_boltzmann_forward_KLXX_G).parameters
+    assert "checkpoint" in inspect.signature(train_forward_KLX_G).parameters
+    assert "checkpoint" in inspect.signature(boltzmann_forward_KLX_G).parameters
+    assert "checkpoint" in inspect.signature(train_forward_KLXX_G).parameters
+    assert "checkpoint" in inspect.signature(boltzmann_forward_KLXX_G).parameters
+    assert "snapshot_steps" not in inspect.signature(train_forward_KLX_G).parameters
+    assert "snapshot_steps" not in inspect.signature(train_forward_KLXX_G).parameters
+    assert "selection_steps" not in inspect.signature(boltzmann_forward_KLX_G).parameters
+    assert "selection_steps" not in inspect.signature(boltzmann_forward_KLXX_G).parameters
     assert tuple(inspect.signature(train_forward_KLX_G).parameters)[5:8] == (
         "batch_size",
         "train_steps",
@@ -81,8 +122,6 @@ def main() -> None:
     assert not any(name.startswith("_") for name in canonical_bg)
     canonical_klxx = inspect.signature(boltzmann_forward_KLXX_G).parameters
     assert "opt_alpha" in canonical_klxx and "opt_steps" in canonical_klxx
-    assert train_molecular_forward_KLX_G is not train_forward_KLX_G
-    assert train_molecular_forward_KLXX_G is not train_forward_KLXX_G
     messages = []
     Monitor(1, "[molecular] ", messages.append)._emit(1, -2.0, 0.25)
     assert messages == [
@@ -92,8 +131,12 @@ def main() -> None:
     domain = Mixed_Domain(2, 1)
     source = Molecular_Source(domain)
     samples = source.samples(jax.random.key(20), N=4)
-    legacy_samples = source.samples(jax.random.key(20), n=4)
-    assert bool(jnp.array_equal(samples, legacy_samples))
+    try:
+        source.samples(jax.random.key(20), n=4)
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("retired n= sample-count alias must fail")
     assert samples.dtype == jnp.float32
     assert source(samples).dtype == jnp.float32
     expect_value_error(lambda: source(jnp.zeros((4, 2))))

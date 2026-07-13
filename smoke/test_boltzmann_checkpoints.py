@@ -73,8 +73,8 @@ def patched_driver(
         return samples, jnp.ones((steps,))
 
     if importance_weights is None:
-        def importance_weights(samples, source, target, flow, chunk):
-            del source, target, flow, chunk
+        def importance_weights(samples, source, target, flow, chunks):
+            del source, target, flow, chunks
             return jnp.zeros((samples.shape[0],), dtype=samples.dtype)
 
     try:
@@ -83,7 +83,7 @@ def patched_driver(
         bg.mixed_mala = mala
         bg._importance_weights_g = importance_weights
         bg._chunked_identity_weights = identity_weights
-        bg._chunked_inverse = lambda flow, samples, chunk: flow.inv(samples)
+        bg._chunked_inverse = lambda flow, samples, chunks: flow.inv(samples)
         yield
     finally:
         for name, value in originals.items():
@@ -127,8 +127,8 @@ def run_driver(samples, potential, flow, **kwargs):
     )
 
 
-def zero_identity_weights(samples, source, target, chunk):
-    del source, target, chunk
+def zero_identity_weights(samples, source, target, chunks):
+    del source, target, chunks
     return jnp.zeros((samples.shape[0],), dtype=samples.dtype)
 
 
@@ -136,14 +136,14 @@ def test_warm_start_and_trained_tie_win() -> None:
     samples, potential, flow = common_inputs()
     seen = []
 
-    def trainer(pool, source_pool, previous, current, initial, n_batch, steps, lr, **kwargs):
-        del pool, source_pool, previous, current, n_batch, lr, kwargs
+    def trainer(pool, source_pool, previous, current, initial, batch_size, train_steps, lr, **kwargs):
+        del pool, source_pool, previous, current, batch_size, lr, kwargs
         seen.append(float(initial.shift[0]))
         return (
             Probe_Flow(initial.shift + 1.0),
-            jnp.ones((steps,)),
-            jnp.ones((steps,)),
-            jnp.ones((steps,), dtype=bool),
+            jnp.ones((train_steps,)),
+            jnp.ones((train_steps,)),
+            jnp.ones((train_steps,), dtype=bool),
         )
 
     with patched_driver(trainer=trainer, identity_weights=zero_identity_weights):
@@ -171,6 +171,14 @@ def test_warm_start_and_trained_tie_win() -> None:
         for stage in stages
     )
     retired = {
+        "ess",
+        "trained_ess",
+        "identity_ess",
+        "ess_samples",
+        "ess_history",
+        "kept_history",
+        "update_history",
+        "imp_history",
         "selected_checkpoint",
         "selected_step",
         "checkpoint_steps",
@@ -185,17 +193,17 @@ def test_only_final_endpoint_is_scored() -> None:
     flow = Probe_Flow(jnp.full((1,), 2.0))
     scored = []
 
-    def trainer(pool, source_pool, previous, current, initial, n_batch, steps, lr, **kwargs):
-        del pool, source_pool, previous, current, initial, n_batch, lr, kwargs
+    def trainer(pool, source_pool, previous, current, initial, batch_size, train_steps, lr, **kwargs):
+        del pool, source_pool, previous, current, initial, batch_size, lr, kwargs
         return (
             Probe_Flow(jnp.full((1,), 3.0)),
-            jnp.ones((steps,)),
-            jnp.ones((steps,)),
-            jnp.ones((steps,), dtype=bool),
+            jnp.ones((train_steps,)),
+            jnp.ones((train_steps,)),
+            jnp.ones((train_steps,), dtype=bool),
         )
 
-    def importance_weights(samples, source, target, candidate, chunk):
-        del source, target, chunk
+    def importance_weights(samples, source, target, candidate, chunks):
+        del source, target, chunks
         scored.append(float(candidate.shift[0]))
         return jnp.zeros((samples.shape[0],), dtype=samples.dtype)
 
@@ -217,14 +225,14 @@ def test_zero_updates_reaches_final_ess_gate() -> None:
     samples, potential, flow = common_inputs()
     calls, lines = [], []
 
-    def trainer(pool, source_pool, previous, current, initial, n_batch, steps, lr, **kwargs):
-        del pool, source_pool, previous, current, n_batch, lr, kwargs
+    def trainer(pool, source_pool, previous, current, initial, batch_size, train_steps, lr, **kwargs):
+        del pool, source_pool, previous, current, batch_size, lr, kwargs
         calls.append(True)
         return (
             initial,
-            jnp.ones((steps,)),
-            jnp.ones((steps,)),
-            jnp.zeros((steps,), dtype=bool),
+            jnp.ones((train_steps,)),
+            jnp.ones((train_steps,)),
+            jnp.zeros((train_steps,), dtype=bool),
         )
 
     with patched_driver(trainer=trainer, identity_weights=zero_identity_weights):
@@ -251,13 +259,13 @@ def test_identity_rescues_nonfinite_final() -> None:
     samples, potential, flow = common_inputs()
     lines = []
 
-    def trainer(pool, source_pool, previous, current, initial, n_batch, steps, lr, **kwargs):
-        del pool, source_pool, previous, current, initial, n_batch, lr, kwargs
+    def trainer(pool, source_pool, previous, current, initial, batch_size, train_steps, lr, **kwargs):
+        del pool, source_pool, previous, current, initial, batch_size, lr, kwargs
         return (
             Probe_Flow(jnp.full((1,), jnp.nan)),
-            jnp.ones((steps,)),
-            jnp.ones((steps,)),
-            jnp.ones((steps,), dtype=bool),
+            jnp.ones((train_steps,)),
+            jnp.ones((train_steps,)),
+            jnp.ones((train_steps,), dtype=bool),
         )
 
     with patched_driver(trainer=trainer, identity_weights=zero_identity_weights):
@@ -282,14 +290,14 @@ def test_retry_smc_is_diagnostic_after_validation_rejection() -> None:
     samples, potential, flow = common_inputs()
     trainer_calls, smc_calls, lines = [], [], []
 
-    def trainer(pool, source_pool, previous, current, initial, n_batch, steps, lr, **kwargs):
-        del pool, source_pool, previous, current, initial, n_batch, lr, kwargs
+    def trainer(pool, source_pool, previous, current, initial, batch_size, train_steps, lr, **kwargs):
+        del pool, source_pool, previous, current, initial, batch_size, lr, kwargs
         trainer_calls.append(True)
         return (
             Probe_Flow(jnp.asarray([float(len(trainer_calls))])),
-            jnp.ones((steps,)),
-            jnp.ones((steps,)),
-            jnp.ones((steps,), dtype=bool),
+            jnp.ones((train_steps,)),
+            jnp.ones((train_steps,)),
+            jnp.ones((train_steps,), dtype=bool),
         )
 
     def smc_sampler(key, pool, source, target, *, ladder, mc_steps, **kwargs):
@@ -298,13 +306,13 @@ def test_retry_smc_is_diagnostic_after_validation_rejection() -> None:
         ess = 1.0 if len(smc_calls) == 1 else 0.0
         return pool, jnp.full((ladder,), ess), jnp.ones((ladder, mc_steps))
 
-    def peaked_identity(samples, source, target, chunk):
-        del source, target, chunk
+    def peaked_identity(samples, source, target, chunks):
+        del source, target, chunks
         values = jnp.full((samples.shape[0],), -10.0, dtype=samples.dtype)
         return values.at[0].set(0.0)
 
-    def importance_weights(samples, source, target, candidate, chunk):
-        del source, target, chunk
+    def importance_weights(samples, source, target, candidate, chunks):
+        del source, target, chunks
         if float(candidate.shift[0]) == 2.0:
             return jnp.zeros((samples.shape[0],), dtype=samples.dtype)
         values = jnp.full((samples.shape[0],), -10.0, dtype=samples.dtype)

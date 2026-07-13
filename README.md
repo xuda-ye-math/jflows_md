@@ -24,7 +24,7 @@ JAX and Equinox.
 - **Molecular sampling.** Mixed-domain MALA, potential-space SMC, and the
   G-native score-free AIS surrogate use explicit `ladder`, `mc_dt`,
   `mc_steps`, and `chunks` controls.
-- **Boltzmann-generator training.** Molecular forward KL, KL+X, and KL+X+X
+- **Boltzmann-generator training.** Molecular KL+X and KL+X+X
   trainers share the adaptive controller, optimizer-only `e_clip`, global
   `g_clip`, standard per-step batch ESS, honest proposal-side stage ESS,
   final-versus-identity flow selection, and MALA. Masked losses use finite-safe
@@ -232,8 +232,7 @@ SMC/AIS, molecular sources, and rematerialized stage training stay here
 because their Euclidean/torus and persistence contracts differ from the
 single-domain routines in `jflows`.
 
-The earlier `train_molecular_*` and `molecular_boltzmann_*` names remain
-compatibility aliases. Canonical controls use `batch_size`, `pool_size`,
+Training and Boltzmann drivers use `batch_size`, `pool_size`,
 `train_steps`, `mc_dt`, `mc_steps`, `opt_alpha`, `opt_steps`, and `chunks`;
 direct MALA uses `dt`, `steps`, and `image_radius`, while composite drivers
 use `mc_dt`, `mc_steps`, and `mc_image_radius`. The bridge-level count remains
@@ -265,13 +264,6 @@ relative to `flow_dir`, so load one with
 complete directory preserves the manifest. Per-attempt `monitor.npz` files
 store the batch ESS, kept fraction, and update-applied histories.
 
-For transition compatibility only, stage records still expose the retired
-aliases `ess`, `trained_ess`, `identity_ess`, `ess_samples`, `ess_history`,
-`kept_history`, `update_history`, and `imp_history`. New code must use the
-explicit `valid_*` scalars and attempt-aligned `*_hist` arrays above. These
-aliases are derivable, are not part of the canonical schema, and will be
-removed in a future major version.
-
 Potential-space SMC is classical: every ladder level rejuvenates at its
 matching intermediate potential. Flow-proposal AIS instead applies fractional
 geometric weights while rejuvenating at the final target at every level. It is
@@ -287,11 +279,10 @@ algebra supplied by that dependency. Artifacts should record both repository
 commits because earlier 0.1.x training histories and controller metadata are
 not interchangeable with this release.
 
-Version 0.2.1 additionally canonicalizes a legitimately empty molecular
-interaction index list to its typed shape (`(0,2)`, `(0,3)`, or `(0,4)`). This
-allows very small molecules with no proper torsion or nonbonded-pair term while
-strictly rejecting malformed nonempty index ranks and widths. Existing
-well-formed nonempty force-field arrays and arithmetic are unchanged.
+Version 0.2.1 removes the transition call aliases from 0.2.0 and requires the
+canonical `jflows>=0.2.1` interfaces. Numerical kernels, random streams,
+empty-interaction handling, and well-formed force-field arithmetic are
+unchanged from 0.2.0.
 
 ## Frozen molecular targets
 

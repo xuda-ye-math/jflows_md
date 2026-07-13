@@ -16,7 +16,7 @@ from jflows_md.boltzmann import (  # noqa: E402
     _bg_parameters,
     _ess as _bg_ess,
     _linear_weights as _bg_linear_weights,
-    molecular_boltzmann_forward_KLXX_G,
+    boltzmann_forward_KLXX_G,
 )
 from jflows_md.core.domain import Mixed_Domain  # noqa: E402
 from jflows_md.flow import Mixed_NSF  # noqa: E402
@@ -24,7 +24,7 @@ from jflows_md.source import Molecular_Source  # noqa: E402
 from jflows_md.train import (  # noqa: E402
     _adam_step,
     _clip_global,
-    train_molecular_forward_KLXX_G,
+    train_forward_KLXX_G,
 )
 from jflows_md.utils import (  # noqa: E402
     _linear_weights,
@@ -238,8 +238,7 @@ def main() -> None:
 
     samples = source.samples(jax.random.key(3), N=4)
     target = Toy_Potential(domain)
-    # Duplicate detection is based on keyword presence, including when the
-    # canonical spelling is passed explicitly at its exact default value.
+    # Retired utility keywords are rejected by the canonical signatures.
     raises_type_error(
         lambda: wrapped_normal_relative_error_bound(dt=1e-4, step=1e-4)
     )
@@ -321,12 +320,12 @@ def main() -> None:
 
     raises(
         lambda: mixed_mala(
-            jax.random.key(4), samples, target, domain, step=float("nan")
+            jax.random.key(4), samples, target, domain, dt=float("nan")
         )
     )
     raises(
         lambda: mixed_mala(
-            jax.random.key(4), samples, target, domain, iters=1.5
+            jax.random.key(4), samples, target, domain, steps=1.5
         )
     )
     raises(
@@ -336,7 +335,7 @@ def main() -> None:
             source,
             target,
             t_list=(0.5, float("nan")),
-            iters=1,
+            mc_steps=1,
             domain=domain,
         )
     )
@@ -363,7 +362,7 @@ def main() -> None:
         (0.5, float("inf")),
     ):
         raises(
-            lambda alpha=alpha, beta=beta: train_molecular_forward_KLXX_G(
+            lambda alpha=alpha, beta=beta: train_forward_KLXX_G(
                 samples,
                 samples,
                 samples,
@@ -371,30 +370,30 @@ def main() -> None:
                 target,
                 flow,
                 domain,
-                n_batch=2,
-                steps=1,
+                batch_size=2,
+                train_steps=1,
                 lr=1e-3,
                 coeff_alpha=alpha,
                 coeff_beta=beta,
-                mc_iters=0,
+                mc_steps=0,
             )
         )
         raises(
-            lambda alpha=alpha, beta=beta: molecular_boltzmann_forward_KLXX_G(
+            lambda alpha=alpha, beta=beta: boltzmann_forward_KLXX_G(
                 samples,
                 source,
                 target,
                 flow,
-                n_pool=2,
-                n_batch=2,
-                steps=1,
+                pool_size=2,
+                batch_size=2,
+                train_steps=1,
                 lr=1e-3,
                 ladder=1,
-                mc_step=1e-3,
-                mc_iters=0,
+                mc_dt=1e-3,
+                mc_steps=0,
                 melt=0.0,
-                opt_step=1e-2,
-                opt_iters=0,
+                opt_alpha=1e-2,
+                opt_steps=0,
                 coeff_alpha=alpha,
                 coeff_beta=beta,
             )

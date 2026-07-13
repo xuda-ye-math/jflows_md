@@ -151,15 +151,16 @@ def main() -> None:
         monitor_path = Path(temporary) / manifest["attempts"][0]["monitor_path"]
         with np.load(monitor_path) as monitor:
             assert np.array_equal(
-                monitor["batch_ess_hist"], np.asarray(stages[0]["ess_history"])
+                monitor["batch_ess_hist"],
+                np.asarray(stages[0]["batch_ess_hist"][0]),
             )
             assert np.array_equal(
                 monitor["kept_fraction_hist"],
-                np.asarray(stages[0]["kept_history"]),
+                np.asarray(stages[0]["kept_fraction_hist"][0]),
             )
             assert np.array_equal(
                 monitor["update_applied_hist"],
-                np.asarray(stages[0]["update_history"]),
+                np.asarray(stages[0]["update_applied_hist"][0]),
             )
     plain_particles, plain_stages = boltzmann_forward_KLX_G(
         x_valid,
@@ -211,6 +212,14 @@ def main() -> None:
         - max(stages[0]["valid_trained_ess"], stages[0]["valid_identity_ess"])
     ) < 1e-12
     retired = {
+        "ess",
+        "trained_ess",
+        "identity_ess",
+        "ess_samples",
+        "ess_history",
+        "kept_history",
+        "update_history",
+        "imp_history",
         "selected_checkpoint",
         "selected_step",
         "checkpoint_steps",
@@ -327,14 +336,14 @@ def main() -> None:
         target,
         ais_flow,
         ladder=2,
-        step=1e-3,
-        iters=1,
-        chunk=2,
+        mc_dt=1e-3,
+        mc_steps=1,
+        chunks=2,
         return_initial_log_weights=True,
     )
     jax.block_until_ready(ais_samples)
     expected_log_weights = importance_weights_log(
-        x_valid, source, target, ais_flow, "G", chunk=2
+        x_valid, source, target, ais_flow, "G", chunks=2
     )
     assert bool(
         jnp.allclose(initial_log_weights, expected_log_weights, atol=1e-10)
@@ -346,9 +355,9 @@ def main() -> None:
         target,
         ais_flow,
         ladder=2,
-        step=1e-3,
-        iters=1,
-        chunk=2,
+        mc_dt=1e-3,
+        mc_steps=1,
+        chunks=2,
     )
     assert bool(jnp.array_equal(ais_default, ais_samples))
 
@@ -375,9 +384,9 @@ def main() -> None:
         target,
         ais_flow,
         ladder=3,
-        step=1e-3,
-        iters=0,
-        chunk=1,
+        mc_dt=1e-3,
+        mc_steps=0,
+        chunks=1,
     )
     assert bool(jnp.array_equal(public_manual, manual))
     assert ais_samples.shape == x_valid.shape

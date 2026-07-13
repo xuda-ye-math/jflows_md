@@ -33,8 +33,6 @@ from .utils import mixed_mala, mixed_quench_and_temper, sequential_monte_carlo
 __all__ = [
     "boltzmann_forward_KLX_G",
     "boltzmann_forward_KLXX_G",
-    "molecular_boltzmann_forward_KLX_G",
-    "molecular_boltzmann_forward_KLXX_G",
 ]
 
 
@@ -626,7 +624,6 @@ def _boltzmann_forward_G(
                 selected_flow = identity_flow
                 selected_log_weight = identity_log_weight
                 stage_ess = identity_ess
-            improvement = stage_ess - identity_ess
             status(
                 f"[stage {stage_index}] t={candidate_t:.4f} "
                 f"validation ESS[N={particles.shape[0]}]="
@@ -721,15 +718,6 @@ def _boltzmann_forward_G(
                     "selected_flow_path": selected_flow_path,
                     "kept_fraction_hist": jnp.stack(kept_fraction_hist),
                     "update_applied_hist": jnp.stack(update_applied_hist),
-                    # Compatibility aliases retained for existing drivers.
-                    "ess": stage_ess,
-                    "trained_ess": trained_ess,
-                    "identity_ess": identity_ess,
-                    "ess_samples": particles.shape[0],
-                    "ess_history": ess_history,
-                    "kept_history": kept_history,
-                    "update_history": update_history,
-                    "imp_history": improvement,
                     "smc_ess": smc_ess,
                     "smc_acceptance": smc_acceptance,
                     "mala_acceptance": mala_acceptance,
@@ -907,120 +895,4 @@ def boltzmann_forward_KLXX_G(
         _melt=melt,
         _opt_alpha=opt_alpha,
         _opt_steps=opt_steps,
-    )
-
-
-def molecular_boltzmann_forward_KLX_G(
-    x_valid: Array,
-    source,
-    target,
-    flow,
-    *,
-    n_pool: int,
-    n_batch: int,
-    steps: int,
-    lr: float,
-    ladder: int,
-    mc_step: float,
-    mc_iters: int,
-    coeff_lambda: float = 1.0,
-    monitor=None,
-    bg_param: dict | None = None,
-    chunk: int = 1,
-    images: int = 3,
-    e_clip: float = float("inf"),
-    g_clip: float = float("inf"),
-    seed: int = 0,
-    checkpoint: bool = False,
-    lr_warmup: int = 0,
-    flow_dir: str | Path | None = None,
-) -> tuple[Array, list[dict]]:
-    """Compatibility alias for :func:`boltzmann_forward_KLX_G`."""
-
-    return boltzmann_forward_KLX_G(
-        x_valid,
-        source,
-        target,
-        flow,
-        pool_size=n_pool,
-        batch_size=n_batch,
-        train_steps=steps,
-        lr=lr,
-        ladder=ladder,
-        mc_dt=mc_step,
-        mc_steps=mc_iters,
-        coeff_lambda=coeff_lambda,
-        monitor=monitor,
-        bg_param=bg_param,
-        chunks=chunk,
-        mc_image_radius=images,
-        e_clip=e_clip,
-        g_clip=g_clip,
-        seed=seed,
-        checkpoint=checkpoint,
-        lr_warmup=lr_warmup,
-        flow_dir=flow_dir,
-    )
-
-
-def molecular_boltzmann_forward_KLXX_G(
-    x_valid: Array,
-    source,
-    target,
-    flow,
-    *,
-    n_pool: int,
-    n_batch: int,
-    steps: int,
-    lr: float,
-    ladder: int,
-    mc_step: float,
-    mc_iters: int,
-    melt: float,
-    opt_step: float,
-    opt_iters: int,
-    coeff_lambda: float = 1.0,
-    coeff_alpha: float = 0.5,
-    coeff_beta: float = 0.5,
-    monitor=None,
-    bg_param: dict | None = None,
-    chunk: int = 1,
-    images: int = 3,
-    e_clip: float = float("inf"),
-    g_clip: float = float("inf"),
-    seed: int = 0,
-    checkpoint: bool = False,
-    lr_warmup: int = 0,
-    flow_dir: str | Path | None = None,
-) -> tuple[Array, list[dict]]:
-    """Compatibility alias for :func:`boltzmann_forward_KLXX_G`."""
-
-    return boltzmann_forward_KLXX_G(
-        x_valid,
-        source,
-        target,
-        flow,
-        pool_size=n_pool,
-        batch_size=n_batch,
-        train_steps=steps,
-        lr=lr,
-        ladder=ladder,
-        mc_dt=mc_step,
-        mc_steps=mc_iters,
-        melt=melt,
-        opt_alpha=opt_step,
-        opt_steps=opt_iters,
-        coeff_lambda=coeff_lambda,
-        coeff_alpha=coeff_alpha,
-        coeff_beta=coeff_beta,
-        monitor=monitor,
-        bg_param=bg_param,
-        chunks=chunk,
-        mc_image_radius=images,
-        e_clip=e_clip,
-        g_clip=g_clip,
-        seed=seed,
-        checkpoint=checkpoint,
-        lr_warmup=lr_warmup,
-        flow_dir=flow_dir,
     )

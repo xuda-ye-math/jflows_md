@@ -34,7 +34,7 @@ class Molecular_Potential(Potential):
     Current schema-2 targets use the standard Cartesian configurational
     measure with global translation and rotation factored out. The canonical
     Cartesian frame returned by :meth:`cartesian` is a representative, not a
-    set of six physical holonomic constraints. An explicitly supplied legacy
+    set of six physical holonomic constraints. An explicitly supplied
     schema-1 bundle retains its historical gauge-slice measure.
     """
 

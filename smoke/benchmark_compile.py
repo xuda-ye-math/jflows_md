@@ -15,7 +15,7 @@ The bounded default grid covers:
   source-particle construction and its AIS path, a biased, score-free,
   final-target-rejuvenated sampling surrogate;
 * one complete public
-  :func:`jflows_md.train.train_molecular_forward_KLX_G` step, including
+  :func:`jflows_md.train.train_forward_KLX_G` step, including
   construction of its supplied mixed-domain particle set;
 * glycerol's real :class:`jflows_md.Molecular_Potential` energy;
 * the same energy together with its batched gradient; and
@@ -73,21 +73,21 @@ FLOW_BINS = 8
 GLYCEROL_BUNDLE = "glycerol_gaff2_am1bcc_obc1"
 GLYCEROL_EUCLIDEAN = 25
 GLYCEROL_PERIODIC = 11
-MALA_ITERS = 2
-MALA_STEP = 1e-8
-MALA_IMAGES = 3
+MALA_STEPS = 2
+MALA_DT = 1e-8
+MALA_IMAGE_RADIUS = 3
 TRAIN_VALID = 16
 TRAIN_BATCH = 8
 TRAIN_STEPS = 1
 TRAIN_LADDER = 2
-TRAIN_MC_STEP = 1e-3
-TRAIN_MC_ITERS = 1
+TRAIN_MC_DT = 1e-3
+TRAIN_MC_STEPS = 1
 
 WORKLOADS = (
     "jflows_ncsf",
     "jflows_md_mixed_nsf",
     "jflows_train_forward_klx_g",
-    "jflows_md_train_molecular_forward_klx_g",
+    "jflows_md_train_forward_klx_g",
     "glycerol_energy",
     "glycerol_energy_grad",
     "glycerol_mixed_mala_chunk",
@@ -106,7 +106,7 @@ class Cell:
     data_samples: int = 0
     trainer_steps: int = 0
     ladder: int = 0
-    mc_iters: int = 0
+    mc_steps: int = 0
 
     @property
     def label(self) -> str:
@@ -125,7 +125,7 @@ CSV_FIELDS = (
     "data_samples",
     "trainer_steps",
     "ladder",
-    "mc_iters",
+    "mc_steps",
     "array_elements",
     "backend",
     "device",
@@ -189,14 +189,14 @@ def _cells(selected: Sequence[str], quick: bool) -> list[Cell]:
                     TRAIN_VALID,
                     TRAIN_STEPS,
                     TRAIN_LADDER,
-                    TRAIN_MC_ITERS,
+                    TRAIN_MC_STEPS,
                 )
             )
-    if "jflows_md_train_molecular_forward_klx_g" in selected:
+    if "jflows_md_train_forward_klx_g" in selected:
         for size, hidden, transforms in FLOW_MODELS:
             cells.append(
                 Cell(
-                    "jflows_md_train_molecular_forward_klx_g",
+                    "jflows_md_train_forward_klx_g",
                     TRAIN_BATCH,
                     f"R{GLYCEROL_EUCLIDEAN}xT{GLYCEROL_PERIODIC}_{size}",
                     GLYCEROL_EUCLIDEAN + GLYCEROL_PERIODIC,
@@ -221,7 +221,7 @@ def _cells(selected: Sequence[str], quick: bool) -> list[Cell]:
                 Cell(
                     "glycerol_mixed_mala_chunk",
                     batch,
-                    f"glycerol_36d_iters{MALA_ITERS}",
+                    f"glycerol_36d_steps{MALA_STEPS}",
                     36,
                 )
             )
@@ -289,7 +289,7 @@ def _fallback_row(
         "data_samples": cell.data_samples,
         "trainer_steps": cell.trainer_steps,
         "ladder": cell.ladder,
-        "mc_iters": cell.mc_iters,
+        "mc_steps": cell.mc_steps,
         "worker_wall_s": f"{wall:.3f}",
         "timeout_s": f"{timeout:.3f}",
         "error": error,
@@ -496,12 +496,12 @@ def _build_operation(cell: Cell):
                 source,
                 target,
                 candidate,
-                n_batch=cell.batch,
-                steps=cell.trainer_steps,
+                batch_size=cell.batch,
+                train_steps=cell.trainer_steps,
                 lr=1e-3,
                 ladder=cell.ladder,
-                mc_step=TRAIN_MC_STEP,
-                mc_iters=cell.mc_iters,
+                mc_dt=TRAIN_MC_DT,
+                mc_steps=cell.mc_steps,
                 coeff_lambda=1.0,
                 mc_adjust=False,
                 checkpoint=False,
@@ -517,11 +517,11 @@ def _build_operation(cell: Cell):
 
         return operation, (flow, sample_key), flow, validate, lower.dtype
 
-    if cell.workload == "jflows_md_train_molecular_forward_klx_g":
+    if cell.workload == "jflows_md_train_forward_klx_g":
         from jflows.potential import potential_from
         from jflows_md import Mixed_NSF, Molecular_Source
         from jflows_md.core.domain import Mixed_Domain
-        from jflows_md.train import train_molecular_forward_KLX_G
+        from jflows_md.train import train_forward_KLX_G
 
         domain = Mixed_Domain(GLYCEROL_EUCLIDEAN, GLYCEROL_PERIODIC)
         source = Molecular_Source(domain)
@@ -558,14 +558,14 @@ def _build_operation(cell: Cell):
             # than running AIS, so construct that data inside the measured
             # public one-step call as part of the end-to-end workload.
             samples = source.samples(key, N=cell.data_samples)
-            return train_molecular_forward_KLX_G(
+            return train_forward_KLX_G(
                 samples,
                 samples,
                 source,
                 target,
                 candidate,
-                n_batch=cell.batch,
-                steps=cell.trainer_steps,
+                batch_size=cell.batch,
+                train_steps=cell.trainer_steps,
                 lr=1e-3,
                 coeff_lambda=1.0,
                 energy_origin=0.0,
@@ -610,7 +610,7 @@ def _build_operation(cell: Cell):
     if cell.workload == "glycerol_mixed_mala_chunk":
         from jflows_md.utils import mixed_mala_step
 
-        keys = jax.random.split(jax.random.key(6), MALA_ITERS)
+        keys = jax.random.split(jax.random.key(6), MALA_STEPS)
 
         def one_chunk(model, state, iteration_keys):
             def body(current, key):
@@ -619,8 +619,8 @@ def _build_operation(cell: Cell):
                     current,
                     model,
                     model.domain,
-                    mc_dt=MALA_STEP,
-                    image_radius=MALA_IMAGES,
+                    dt=MALA_DT,
+                    image_radius=MALA_IMAGE_RADIUS,
                 )
                 return updated, accepted.astype(updated.dtype).mean()
 
@@ -631,7 +631,7 @@ def _build_operation(cell: Cell):
         def validate(output):
             updated, acceptance = output
             assert updated.shape == samples.shape
-            assert acceptance.shape == (MALA_ITERS,)
+            assert acceptance.shape == (MALA_STEPS,)
 
         return (
             operation,
@@ -700,7 +700,7 @@ def _worker(cell: Cell, warm_repeats: int) -> dict[str, Any]:
         "data_samples": cell.data_samples,
         "trainer_steps": cell.trainer_steps,
         "ladder": cell.ladder,
-        "mc_iters": cell.mc_iters,
+        "mc_steps": cell.mc_steps,
         "array_elements": _array_elements(model),
         "backend": jax.default_backend(),
         "device": getattr(device, "device_kind", str(device)),

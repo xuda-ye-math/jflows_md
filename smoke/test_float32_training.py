@@ -16,7 +16,7 @@ from jflows.train import Monitor  # noqa: E402
 from jflows.utils import compute_ESS_log  # noqa: E402
 from jflows_md import Mixed_NSF, Molecular_Source  # noqa: E402
 from jflows_md.core.domain import Mixed_Domain  # noqa: E402
-from jflows_md.train import train_molecular_forward_KLX_G  # noqa: E402
+from jflows_md.train import train_forward_KLX_G  # noqa: E402
 
 
 class Toy_Target(Potential):
@@ -58,14 +58,14 @@ def main() -> None:
         hidden_features=(8, 8),
     ).zeros()
     messages = []
-    trained, ess, kept, updated = train_molecular_forward_KLX_G(
+    trained, ess, kept, updated = train_forward_KLX_G(
         samples,
         samples,
         source,
         target,
         flow,
-        n_batch=6,
-        steps=2,
+        batch_size=6,
+        train_steps=2,
         lr=1e-3,
         checkpoint=True,
         e_clip=1000.0,
@@ -117,14 +117,14 @@ def main() -> None:
         ],
         dtype=samples.dtype,
     )
-    _, hard_ess, _, _ = train_molecular_forward_KLX_G(
+    _, hard_ess, _, _ = train_forward_KLX_G(
         hard_samples,
         hard_samples,
         source,
         Hard_Wall_Target(domain),
         flow,
-        n_batch=4,
-        steps=1,
+        batch_size=4,
+        train_steps=1,
         lr=1e-3,
         seed=43,
     )

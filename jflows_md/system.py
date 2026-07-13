@@ -33,16 +33,16 @@ _FROZEN_BUNDLE_MANIFEST_SHA256 = {
 }
 
 # Public names were shortened after the coordinate-schema-2 targets were
-# frozen. Keep old artifact metadata readable without retaining duplicate
-# bundle directories or advertising the retired names.
-_LEGACY_BUNDLE_ALIASES = {
+# frozen. These private, hash-gated migrations apply only while reading
+# scientific artifacts; ordinary bundle lookup accepts current names only.
+_ARTIFACT_BUNDLE_NAME_MIGRATIONS = {
     "fab_adp_ff96_obc1_v2": "adp_ff96_obc1",
     "glycerol_gaff2_am1bcc_obc1_v2": "glycerol_gaff2_am1bcc_obc1",
     "diethanolamine_neutral_gaff2_am1bcc_obc1_v2": (
         "diethanolamine_gaff2_am1bcc_obc1"
     ),
 }
-_LEGACY_BUNDLE_MANIFEST_SHA256 = {
+_ARTIFACT_BUNDLE_MANIFEST_SHA256 = {
     "fab_adp_ff96_obc1_v2": (
         "8555616ebf85b83c47635eae2a3a8ecb4d03e8622e80257dd1d4d5ecad2155f1"
     ),
@@ -74,8 +74,7 @@ def _read_json(path: Path) -> dict[str, Any]:
 def resolve_bundle(path_or_name: str | Path) -> Path:
     candidate = Path(path_or_name).expanduser()
     if not candidate.exists():
-        canonical = _LEGACY_BUNDLE_ALIASES.get(str(path_or_name), candidate)
-        candidate = BUNDLE_ROOT / canonical
+        candidate = BUNDLE_ROOT / candidate
     if candidate.is_file():
         if candidate.name != "manifest.json":
             raise ValueError(f"bundle file must be manifest.json, got {candidate}")
@@ -93,12 +92,18 @@ def _manifest_matches_bundle_name(
     """Accept an exact current manifest or its reviewed public-name migration."""
     if saved_sha256 == current_sha256:
         return True
-    canonical = _LEGACY_BUNDLE_ALIASES.get(saved_name)
+    canonical = _ARTIFACT_BUNDLE_NAME_MIGRATIONS.get(saved_name)
     return (
         canonical == current_name
-        and _LEGACY_BUNDLE_MANIFEST_SHA256.get(saved_name) == saved_sha256
+        and _ARTIFACT_BUNDLE_MANIFEST_SHA256.get(saved_name) == saved_sha256
         and _FROZEN_BUNDLE_MANIFEST_SHA256.get(current_name) == current_sha256
     )
+
+
+def _artifact_bundle_name(saved_name: str) -> str:
+    """Map a frozen artifact name without changing public bundle lookup."""
+
+    return _ARTIFACT_BUNDLE_NAME_MIGRATIONS.get(saved_name, saved_name)
 
 
 @dataclass(frozen=True)

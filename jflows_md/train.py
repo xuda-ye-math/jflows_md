@@ -19,8 +19,6 @@ from .utils import _mixed_mala_chunk
 __all__ = [
     "train_forward_KLX_G",
     "train_forward_KLXX_G",
-    "train_molecular_forward_KLX_G",
-    "train_molecular_forward_KLXX_G",
 ]
 
 
@@ -535,99 +533,3 @@ def train_forward_KLXX_G(
     )
     trained = eqx.combine(params, static)
     return trained, ess, kept, updated
-
-
-def train_molecular_forward_KLX_G(
-    target_samples: Array,
-    source_samples: Array,
-    source,
-    target,
-    flow,
-    n_batch: int,
-    steps: int,
-    lr: float,
-    *,
-    coeff_lambda: float = 1.0,
-    energy_origin: Array | float = 0.0,
-    e_clip: float = float("inf"),
-    g_clip: float = float("inf"),
-    monitor=None,
-    seed: int | Array = 0,
-    checkpoint: bool = False,
-    lr_warmup: int = 0,
-) -> tuple:
-    """Compatibility alias for :func:`train_forward_KLX_G`."""
-
-    return train_forward_KLX_G(
-        target_samples,
-        source_samples,
-        source,
-        target,
-        flow,
-        batch_size=n_batch,
-        train_steps=steps,
-        lr=lr,
-        coeff_lambda=coeff_lambda,
-        energy_origin=energy_origin,
-        e_clip=e_clip,
-        g_clip=g_clip,
-        monitor=monitor,
-        seed=seed,
-        checkpoint=checkpoint,
-        lr_warmup=lr_warmup,
-    )
-
-
-def train_molecular_forward_KLXX_G(
-    target_samples: Array,
-    source_samples: Array,
-    hat_samples: Array,
-    source,
-    target,
-    flow,
-    domain: Mixed_Domain,
-    n_batch: int,
-    steps: int,
-    lr: float,
-    *,
-    mc_step: float = 1e-3,
-    mc_iters: int = 1,
-    images: int = 3,
-    coeff_lambda: float = 1.0,
-    coeff_alpha: float = 0.5,
-    coeff_beta: float = 0.5,
-    energy_origin: Array | float = 0.0,
-    e_clip: float = float("inf"),
-    g_clip: float = float("inf"),
-    monitor=None,
-    seed: int | Array = 0,
-    checkpoint: bool = False,
-    lr_warmup: int = 0,
-) -> tuple:
-    """Compatibility alias for :func:`train_forward_KLXX_G`."""
-
-    return train_forward_KLXX_G(
-        target_samples,
-        source_samples,
-        hat_samples,
-        source,
-        target,
-        flow,
-        domain,
-        batch_size=n_batch,
-        train_steps=steps,
-        lr=lr,
-        mc_dt=mc_step,
-        mc_steps=mc_iters,
-        mc_image_radius=images,
-        coeff_lambda=coeff_lambda,
-        coeff_alpha=coeff_alpha,
-        coeff_beta=coeff_beta,
-        energy_origin=energy_origin,
-        e_clip=e_clip,
-        g_clip=g_clip,
-        monitor=monitor,
-        seed=seed,
-        checkpoint=checkpoint,
-        lr_warmup=lr_warmup,
-    )

@@ -170,16 +170,12 @@ def main() -> None:
         "mixed_flow_metadata",
         "mixed_mala",
         "mixed_quench_and_temper",
-        "molecular_boltzmann_forward_KLX_G",
-        "molecular_boltzmann_forward_KLXX_G",
         "potential_space_smc",
         "package_source_sha256",
         "sequential_monte_carlo",
         "save_mixed_flow",
         "train_forward_KLX_G",
         "train_forward_KLXX_G",
-        "train_molecular_forward_KLX_G",
-        "train_molecular_forward_KLXX_G",
     }
     assert set(jflows_md.__all__) == expected_public
     for private_name in ("Amber_OBC_Force_Field", "Internal_Coordinates", "Mixed_Domain"):
@@ -187,15 +183,18 @@ def main() -> None:
 
     names = set(available_bundles())
     assert names == set(EXPECTED), (names, set(EXPECTED))
-    legacy_aliases = {
-        "fab_adp_ff96_obc1_v2": "adp_ff96_obc1",
-        "glycerol_gaff2_am1bcc_obc1_v2": "glycerol_gaff2_am1bcc_obc1",
-        "diethanolamine_neutral_gaff2_am1bcc_obc1_v2": (
-            "diethanolamine_gaff2_am1bcc_obc1"
-        ),
-    }
-    for legacy, current in legacy_aliases.items():
-        assert Molecular_Bundle.load(legacy).name == current
+    retired_names = (
+        "fab_adp_ff96_obc1_v2",
+        "glycerol_gaff2_am1bcc_obc1_v2",
+        "diethanolamine_neutral_gaff2_am1bcc_obc1_v2",
+    )
+    for retired in retired_names:
+        try:
+            Molecular_Bundle.load(retired)
+        except FileNotFoundError:
+            pass
+        else:
+            raise AssertionError(f"retired bundle name remained public: {retired}")
     for name, (formula, atoms, dimension, euclidean, periodic) in EXPECTED.items():
         bundle = Molecular_Bundle.load(name, verify=True)
         assert bundle.system["formula"] == formula
