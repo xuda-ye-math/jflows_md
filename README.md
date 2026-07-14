@@ -203,13 +203,24 @@ Training and Boltzmann drivers use `batch_size`, `pool_size`, `train_steps`,
 row partitions and fewer physical samples in each compiled call. `ladder` is
 the number of bridge levels.
 
+For molecular Boltzmann drivers, a positive `pool_size` retains the standard
+with-replacement selection pool. Setting `pool_size=0` is an explicit
+full-pool mode: SMC and training receive every current validation particle
+directly, while KLXX quench-and-temper independently draws the same number of
+fresh source samples before its usual melt, L-BFGS, and mixed-MALA steps.
+Internal SMC resampling is unchanged. Full-pool mode makes the reported stage
+ESS an in-sample full-population diagnostic; an independent reliability audit
+still requires a separate untouched sample population.
+
 The mixed flow follows `jflows` direction conventions. `F` maps source to
 target and `G = F^{-1}` maps target to source. Molecular forward training is
 G-native and therefore does not take a direction string.
 
 The adaptive full-validation gate compares the trained flow with exact
 identity. The higher ESS is the sole candidate and is accepted exactly when it
-clears `tau_ess`. The `checkpoint` argument controls backward-pass
+clears `tau_ess`. Every stage attempt trains a fresh identity-initialized
+incremental flow between its previous and candidate bridge potentials. The
+`checkpoint` argument controls backward-pass
 rematerialization; persistent flow artifacts are enabled separately with
 `flow_dir`.
 

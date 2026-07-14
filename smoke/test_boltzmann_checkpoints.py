@@ -34,6 +34,10 @@ class Probe_Potential(Potential):
     def reference_internal(self):
         return jnp.zeros((1,))
 
+    def samples(self, key, sample_count):
+        del key
+        return (10.0 + jnp.arange(sample_count))[:, None]
+
 
 class Probe_Flow(eqx.Module):
     shift: jax.Array
@@ -50,12 +54,20 @@ class Probe_Flow(eqx.Module):
 
 @contextmanager
 def patched_driver(
-    *, trainer, identity_weights, importance_weights=None, smc_sampler=None
+    *,
+    trainer=None,
+    klxx_trainer=None,
+    identity_weights,
+    importance_weights=None,
+    smc_sampler=None,
+    qt_sampler=None,
 ):
     originals = {
         "train_forward_KLX_G": bg.train_forward_KLX_G,
+        "train_forward_KLXX_G": bg.train_forward_KLXX_G,
         "sequential_monte_carlo": bg.sequential_monte_carlo,
         "mixed_mala": bg.mixed_mala,
+        "mixed_quench_and_temper": bg.mixed_quench_and_temper,
         "_importance_weights_g": bg._importance_weights_g,
         "_chunked_identity_weights": bg._chunked_identity_weights,
         "_chunked_inverse": bg._chunked_inverse,
@@ -78,7 +90,12 @@ def patched_driver(
             return jnp.zeros((samples.shape[0],), dtype=samples.dtype)
 
     try:
-        bg.train_forward_KLX_G = trainer
+        if trainer is not None:
+            bg.train_forward_KLX_G = trainer
+        if klxx_trainer is not None:
+            bg.train_forward_KLXX_G = klxx_trainer
+        if qt_sampler is not None:
+            bg.mixed_quench_and_temper = qt_sampler
         bg.sequential_monte_carlo = smc_sampler
         bg.mixed_mala = mala
         bg._importance_weights_g = importance_weights
@@ -116,8 +133,8 @@ def run_driver(samples, potential, flow, **kwargs):
         potential,
         potential,
         flow,
-        pool_size=4,
-        batch_size=2,
+        pool_size=kwargs.pop("pool_size", 4),
+        batch_size=kwargs.pop("batch_size", 2),
         train_steps=kwargs.pop("train_steps", 1),
         lr=1e-3,
         ladder=1,
@@ -132,7 +149,178 @@ def zero_identity_weights(samples, source, target, chunks):
     return jnp.zeros((samples.shape[0],), dtype=samples.dtype)
 
 
-def test_warm_start_and_trained_tie_win() -> None:
+def accepting_trainer(
+    target_pool,
+    source_pool,
+    previous,
+    current,
+    initial,
+    batch_size,
+    train_steps,
+    lr,
+    **kwargs,
+):
+    del target_pool, source_pool, previous, current, batch_size, lr, kwargs
+    return (
+        initial,
+        jnp.ones((train_steps,)),
+        jnp.ones((train_steps,)),
+        jnp.ones((train_steps,), dtype=bool),
+    )
+
+
+def test_full_pool_and_positive_pool_paths() -> None:
+    samples, potential, flow = common_inputs()
+    captured = []
+    lines = []
+
+    def smc_sampler(key, pool, source, target, *, ladder, mc_steps, **kwargs):
+        del key, source, target, kwargs
+        captured.append(pool)
+        return pool, jnp.ones((ladder,)), jnp.ones((ladder, mc_steps))
+
+    with patched_driver(
+        trainer=accepting_trainer,
+        identity_weights=zero_identity_weights,
+        smc_sampler=smc_sampler,
+    ):
+        _, full_stages = run_driver(
+            samples,
+            potential,
+            flow,
+            pool_size=0,
+            monitor=SimpleNamespace(printer=lines.append),
+            bg_param=controls(),
+        )
+
+    assert bool(jnp.array_equal(captured.pop(), samples))
+    assert full_stages[0]["selection_pool_mode"] == "full"
+    assert full_stages[0]["selection_pool_size"] == samples.shape[0]
+    assert any("pool=full N=8" in line for line in lines)
+
+    with patched_driver(
+        trainer=accepting_trainer,
+        identity_weights=zero_identity_weights,
+        smc_sampler=smc_sampler,
+    ):
+        _, indexed_stages = run_driver(
+            samples,
+            potential,
+            flow,
+            pool_size=4,
+            bg_param=controls(),
+        )
+
+    base_key = jax.random.fold_in(jax.random.key(41), 0)
+    selection_base = bg._operation_key(base_key, 1, 1)
+    draw_key = jax.random.fold_in(selection_base, 1)
+    expected_indices = jax.random.randint(
+        draw_key, (4,), 0, samples.shape[0]
+    )
+    assert bool(jnp.array_equal(captured.pop(), samples[expected_indices]))
+    assert indexed_stages[0]["selection_pool_mode"] == "with_replacement"
+    assert indexed_stages[0]["selection_pool_size"] == 4
+
+
+def test_full_pool_klxx_uses_fresh_qt_source_population() -> None:
+    samples, potential, flow = common_inputs()
+    captured = {}
+    lines = []
+
+    def qt_sampler(key, initial, current, domain, **kwargs):
+        del key, current, domain
+        captured["qt_initial"] = initial
+        captured["qt_controls"] = kwargs
+        return initial, jnp.ones((kwargs["mc_steps"],))
+
+    def klxx_trainer(
+        target_pool,
+        source_pool,
+        hat_pool,
+        previous,
+        current,
+        initial,
+        domain,
+        batch_size,
+        train_steps,
+        lr,
+        **kwargs,
+    ):
+        del previous, current, domain, batch_size, lr, kwargs
+        captured["target_pool"] = target_pool
+        captured["source_pool"] = source_pool
+        captured["hat_pool"] = hat_pool
+        return (
+            initial,
+            jnp.ones((train_steps,)),
+            jnp.ones((train_steps,)),
+            jnp.ones((train_steps,), dtype=bool),
+        )
+
+    with patched_driver(
+        klxx_trainer=klxx_trainer,
+        identity_weights=zero_identity_weights,
+        qt_sampler=qt_sampler,
+    ):
+        _, stages = bg.boltzmann_forward_KLXX_G(
+            samples,
+            potential,
+            potential,
+            flow,
+            pool_size=0,
+            batch_size=2,
+            train_steps=1,
+            lr=1e-3,
+            ladder=1,
+            mc_dt=2e-3,
+            mc_steps=1,
+            mc_image_radius=3,
+            melt=0.25,
+            opt_alpha=0.02,
+            opt_steps=3,
+            chunks=2,
+            monitor=SimpleNamespace(printer=lines.append),
+            bg_param=controls(),
+        )
+
+    fresh = potential.samples(jax.random.key(0), samples.shape[0])
+    assert bool(jnp.array_equal(captured["qt_initial"], fresh))
+    assert not bool(jnp.array_equal(captured["qt_initial"], samples))
+    assert bool(jnp.array_equal(captured["source_pool"], samples))
+    assert bool(jnp.array_equal(captured["target_pool"], samples))
+    assert bool(jnp.array_equal(captured["hat_pool"], fresh))
+    assert captured["qt_controls"] == {
+        "melt": 0.25,
+        "opt_alpha": 0.02,
+        "opt_steps": 3,
+        "mc_dt": 2e-3,
+        "mc_steps": 1,
+        "mc_image_radius": 3,
+        "chunks": 2,
+    }
+    assert stages[0]["selection_pool_mode"] == "full"
+    assert stages[0]["selection_pool_size"] == samples.shape[0]
+    assert any("source=fresh, N=8" in line for line in lines)
+
+
+def test_full_pool_input_validation() -> None:
+    samples, potential, flow = common_inputs()
+
+    for overrides in (
+        {"pool_size": -1},
+        {"pool_size": False},
+        {"pool_size": 0, "batch_size": samples.shape[0] + 1},
+        {"pool_size": 0, "chunks": samples.shape[0] + 1},
+    ):
+        try:
+            run_driver(samples, potential, flow, **overrides)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"invalid full-pool controls accepted: {overrides}")
+
+
+def test_each_stage_attempt_starts_from_identity_and_trained_tie_wins() -> None:
     samples, potential, flow = common_inputs()
     seen = []
 
@@ -158,7 +346,7 @@ def test_warm_start_and_trained_tie_win() -> None:
             ),
         )
 
-    assert seen == [0.0, 1.0], seen
+    assert seen == [0.0, 0.0], seen
     assert len(stages) == 2 and stages[-1]["t"] == 1.0
     assert all(stage["selected"] == "trained" for stage in stages)
     assert all(
@@ -270,11 +458,12 @@ def test_identity_rescues_nonfinite_final() -> None:
 
 def test_retry_smc_is_diagnostic_after_validation_rejection() -> None:
     samples, potential, flow = common_inputs()
-    trainer_calls, smc_calls, lines = [], [], []
+    trainer_calls, initial_shifts, smc_calls, lines = [], [], [], []
 
     def trainer(pool, source_pool, previous, current, initial, batch_size, train_steps, lr, **kwargs):
-        del pool, source_pool, previous, current, initial, batch_size, lr, kwargs
+        del pool, source_pool, previous, current, batch_size, lr, kwargs
         trainer_calls.append(True)
+        initial_shifts.append(float(initial.shift[0]))
         return (
             Probe_Flow(jnp.asarray([float(len(trainer_calls))])),
             jnp.ones((train_steps,)),
@@ -320,6 +509,7 @@ def test_retry_smc_is_diagnostic_after_validation_rejection() -> None:
         )
 
     assert len(trainer_calls) == 2 and len(smc_calls) == 2
+    assert initial_shifts == [0.0, 0.0], initial_shifts
     assert len(stages) == 1 and stages[0]["t"] == 0.7
     assert stages[0]["valid_selected_ess"] == 1.0
     assert stages[0]["attempt_status_hist"] == ("rejected", "accepted")
@@ -368,7 +558,10 @@ def test_selection_failure_is_manifested() -> None:
 
 
 def main() -> None:
-    test_warm_start_and_trained_tie_win()
+    test_full_pool_and_positive_pool_paths()
+    test_full_pool_klxx_uses_fresh_qt_source_population()
+    test_full_pool_input_validation()
+    test_each_stage_attempt_starts_from_identity_and_trained_tie_wins()
     test_only_final_endpoint_is_scored()
     test_zero_updates_reaches_final_ess_gate()
     test_identity_rescues_nonfinite_final()

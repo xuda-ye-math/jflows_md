@@ -151,6 +151,8 @@ def _record_attempt(
     valid_identity_ess: float,
     valid_selected_ess: float,
     selected: str,
+    selection_pool_mode: str,
+    selection_pool_size: int,
     batch_ess: Array,
     kept_fraction: Array,
     update_applied: Array,
@@ -184,6 +186,8 @@ def _record_attempt(
         "valid_trained_ess": valid_trained_ess,
         "valid_identity_ess": valid_identity_ess,
         "selected": selected,
+        "selection_pool_mode": selection_pool_mode,
+        "selection_pool_size": selection_pool_size,
         "trained_flow_path": payload.relative_to(flow_root).as_posix(),
         "monitor_path": monitor_path.relative_to(flow_root).as_posix(),
     }
@@ -339,17 +343,23 @@ def _boltzmann_forward_G(
         raise TypeError("the molecular target must expose domain and reference_internal")
     if x_valid.ndim != 2 or x_valid.shape[0] < 1:
         raise ValueError(f"x_valid must have shape [N, d], got {x_valid.shape}")
-    pool_size = integer("pool_size", pool_size)
+    pool_size = integer("pool_size", pool_size, minimum=0)
+    full_pool = pool_size == 0
+    selection_pool_mode = "full" if full_pool else "with_replacement"
+    selection_pool_size = x_valid.shape[0] if full_pool else pool_size
     batch_size = integer("batch_size", batch_size)
     train_steps = integer("train_steps", train_steps)
     ladder = integer("ladder", ladder)
     mc_steps = integer("mc_steps", mc_steps, minimum=0)
     chunks = integer("chunks", chunks)
     mc_image_radius = integer("mc_image_radius", mc_image_radius)
-    if batch_size > pool_size:
-        raise ValueError("batch_size cannot exceed pool_size")
-    if chunks > min(pool_size, x_valid.shape[0]):
-        raise ValueError("chunks cannot exceed pool_size or the x_valid sample count")
+    if batch_size > selection_pool_size:
+        raise ValueError("batch_size cannot exceed the effective selection pool size")
+    if chunks > min(selection_pool_size, x_valid.shape[0]):
+        raise ValueError(
+            "chunks cannot exceed the effective selection pool size or the "
+            "x_valid sample count"
+        )
     if not math.isfinite(lr) or lr <= 0:
         raise ValueError("lr must be positive and finite")
     if not math.isfinite(mc_dt) or mc_dt <= 0:
@@ -414,10 +424,13 @@ def _boltzmann_forward_G(
         )
         selection_base = _operation_key(base_key, 1, stage_index)
         draw_key = jax.random.fold_in(selection_base, 1)
-        indices = jax.random.randint(
-            draw_key, (pool_size,), 0, particles.shape[0]
-        )
-        selection_pool = particles[indices]
+        if full_pool:
+            selection_pool = particles
+        else:
+            indices = jax.random.randint(
+                draw_key, (pool_size,), 0, particles.shape[0]
+            )
+            selection_pool = particles[indices]
         selection_accepted = False
         for selection_attempt in range(60):
             if not candidate_t > previous_t:
@@ -444,7 +457,8 @@ def _boltzmann_forward_G(
             smc_pool = jax.block_until_ready(smc_pool)
             minimum_smc_ess = float(jnp.min(smc_ess))
             status(
-                f"[stage {stage_index}] [select N={pool_size}] t={candidate_t:.4f} "
+                f"[stage {stage_index}] [select pool={selection_pool_mode} "
+                f"N={selection_pool_size}] t={candidate_t:.4f} "
                 f"min SMC ESS={minimum_smc_ess:.3f} "
                 f"MALA={float(jnp.mean(smc_acceptance)):.3f}"
             )
@@ -512,17 +526,19 @@ def _boltzmann_forward_G(
             trainer_seed = jax.random.key_data(
                 _operation_key(base_key, 2, stage_index, attempt)
             )[0]
-            # Preserve the original warm-start scheme: each attempt starts
-            # from the last accepted flow.  The zeroed architecture is a
-            # separate identity fallback used only by the stage ESS gate.
-            attempt_flow = flow
-            identity_flow = flow.zeros()
+            # Every bridge trains a fresh incremental map from the previous
+            # potential to the candidate potential.  Reusing the preceding
+            # bridge map would apply that increment a second time and can send
+            # molecular coordinates directly into a collision singularity.
+            # The same exact identity is also the stage ESS fallback.
+            attempt_flow = flow.zeros()
+            identity_flow = attempt_flow
             hat_acceptance = None
             if _objective == "klxx":
                 qt_seed, qt_key = jax.random.split(
                     _operation_key(base_key, 4, stage_index, attempt)
                 )
-                qt_initial = source.samples(qt_seed, pool_size)
+                qt_initial = source.samples(qt_seed, selection_pool_size)
                 hat_pool, hat_acceptance = mixed_quench_and_temper(
                     qt_key,
                     qt_initial,
@@ -539,7 +555,8 @@ def _boltzmann_forward_G(
                 hat_pool = jax.block_until_ready(hat_pool)
                 status(
                     f"[stage {stage_index}] KLXX coverage pool ready "
-                    f"(N={pool_size}, MALA={float(jnp.mean(hat_acceptance)):.3f})"
+                    f"(source=fresh, N={selection_pool_size}, "
+                    f"MALA={float(jnp.mean(hat_acceptance)):.3f})"
                 )
                 training_result = train_forward_KLXX_G(
                     smc_pool,
@@ -656,6 +673,8 @@ def _boltzmann_forward_G(
                     valid_trained_ess=trained_ess,
                     valid_identity_ess=identity_ess,
                     selected=selected_label,
+                    selection_pool_mode=selection_pool_mode,
+                    selection_pool_size=selection_pool_size,
                     batch_ess=ess_history,
                     kept_fraction=kept_history,
                     update_applied=update_history,
@@ -703,6 +722,8 @@ def _boltzmann_forward_G(
                     "valid_trained_ess": trained_ess,
                     "valid_identity_ess": identity_ess,
                     "valid_sample_count": particles.shape[0],
+                    "selection_pool_mode": selection_pool_mode,
+                    "selection_pool_size": selection_pool_size,
                     "selected": selected_label,
                     "flow": selected_flow,
                     "t_hist": jnp.asarray(t_hist),
@@ -795,7 +816,10 @@ def boltzmann_forward_KLX_G(
 ) -> tuple[Array, list[dict]]:
     """Adaptive mixed-domain KL+X Boltzmann generator.
 
-    Candidate levels are selected by potential-space SMC. The trained flow
+    Candidate levels are selected by potential-space SMC. A positive
+    ``pool_size`` preserves the standard with-replacement selection pool;
+    ``pool_size=0`` instead uses the full current validation-particle
+    population directly. The trained flow
     and exact identity are then compared using proposal ESS on the full
     validation set; their maximum is the sole post-training acceptance gate.
     ``e_clip`` affects only the optimizer loss, and ``checkpoint`` controls
@@ -862,7 +886,10 @@ def boltzmann_forward_KLXX_G(
     """Adaptive mixed-domain ``KL + X_mu + X_mix`` generator.
 
     The stage gate compares only the final trained flow and exact identity on
-    full-validation proposal ESS. ``checkpoint`` is the independent
+    full-validation proposal ESS. A positive ``pool_size`` uses the standard
+    with-replacement selection pool. With ``pool_size=0``, SMC and training
+    use every current validation particle while quench-and-temper starts from
+    the same number of fresh source samples. ``checkpoint`` is the independent
     backward-pass rematerialization switch.
     """
 

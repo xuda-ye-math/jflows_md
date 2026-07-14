@@ -31,7 +31,7 @@ synthetic `R^2 x T^1` case compiles and runs mixed KL+X and KL+X+X trainers,
 final-versus-identity full-validation selection, positive-melt quench-and-temper,
 one adaptive Boltzmann-generator stage, and the G-native score-free AIS
 surrogate through a nonidentity mixed flow. Focused controller regressions
-prove warm-start propagation, the trained-on-tie rule, final-endpoint-only
+prove per-attempt identity initialization, the trained-on-tie rule, final-endpoint-only
 scoring, validation after zero optimizer updates, safe identity fallback for a
 nonfinite final flow, and ESS-only retry behavior. The float32 trainer smoke
 also verifies rematerialized training and mixed finite/infinite proposal-weight

@@ -148,6 +148,10 @@ def main() -> None:
         assert manifest["attempts"][0]["valid_selected_ess"] == stages[0][
             "valid_selected_ess"
         ]
+        assert manifest["attempts"][0]["selection_pool_mode"] == (
+            "with_replacement"
+        )
+        assert manifest["attempts"][0]["selection_pool_size"] == 16
         monitor_path = Path(temporary) / manifest["attempts"][0]["monitor_path"]
         with np.load(monitor_path) as monitor:
             assert np.array_equal(
@@ -235,7 +239,7 @@ def main() -> None:
         source,
         target,
         klxx_flow,
-        pool_size=16,
+        pool_size=0,
         batch_size=8,
         train_steps=2,
         lr=1e-3,
@@ -265,6 +269,8 @@ def main() -> None:
     assert bool(jnp.isfinite(klxx_particles).all())
     assert len(klxx_stages) == 1 and klxx_stages[0]["t"] == 1.0
     assert klxx_stages[0]["objective"] == "klxx"
+    assert klxx_stages[0]["selection_pool_mode"] == "full"
+    assert klxx_stages[0]["selection_pool_size"] == x_valid.shape[0]
     assert abs(
         klxx_stages[0]["valid_selected_ess"]
         - max(
