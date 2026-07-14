@@ -14,6 +14,12 @@ against stored OpenMM Reference results for all three molecules, BAT/chart
 round trips and Jacobians, ADP L-only support, full small-molecule parity
 support, source shapes, JIT compatibility, and the flat `jflows_md.utils`
 interface for mixed-domain MALA and a two-level potential-space SMC bridge. The
+float32 regularization regressions exercise the reference-shifted energy map,
+the live Amber pair-distance floor, exact-collision classifications, stable
+OBC1 coincidence limits, post-cast scalar validation, and preservation of the
+raw physical target. Eager initialization tests cover the direct-trainer
+default (`False`), molecular Boltzmann default (`True`), Boolean validation,
+and exact public signatures. The
 `Mixed_NSF` regression checks cover identity initialization, round trips,
 log-determinants, periodic-representative invariance, seam continuity, and
 finite gradients. The molecular edge suite protects overflow-stable clipping,
@@ -31,8 +37,9 @@ synthetic `R^2 x T^1` case compiles and runs mixed KL+X and KL+X+X trainers,
 final-versus-identity full-validation selection, positive-melt quench-and-temper,
 one adaptive Boltzmann-generator stage, and the G-native score-free AIS
 surrogate through a nonidentity mixed flow. Focused controller regressions
-prove per-attempt identity initialization, the trained-on-tie rule, final-endpoint-only
-scoring, validation after zero optimizer updates, safe identity fallback for a
+prove the per-attempt initialization policy, the trained-on-tie rule, final-endpoint-only
+scoring, warm-start stage/retry semantics, validation after zero optimizer
+updates, safe identity fallback for a
 nonfinite final flow, and ESS-only retry behavior. The float32 trainer smoke
 also verifies rematerialized training and mixed finite/infinite proposal-weight
 ESS. None of these launches a molecular training run.

@@ -21,7 +21,7 @@ from jflows.utils import (
     resample,
 )
 
-from .core.checks import integer, nonnegative_real
+from .core.checks import boolean, integer, nonnegative_real
 from .artifacts import save_mixed_flow
 from .train import (
     train_forward_KLX_G,
@@ -153,6 +153,7 @@ def _record_attempt(
     selected: str,
     selection_pool_mode: str,
     selection_pool_size: int,
+    initialized_from_identity: bool,
     batch_ess: Array,
     kept_fraction: Array,
     update_applied: Array,
@@ -176,7 +177,11 @@ def _record_attempt(
     if manifest_path.is_file():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     else:
-        manifest = {"schema_version": 1, "attempts": []}
+        manifest = {
+            "schema_version": 2,
+            "initialized_from_identity": initialized_from_identity,
+            "attempts": [],
+        }
     record = {
         "stage": stage,
         "attempt": attempt,
@@ -188,6 +193,7 @@ def _record_attempt(
         "selected": selected,
         "selection_pool_mode": selection_pool_mode,
         "selection_pool_size": selection_pool_size,
+        "initialized_from_identity": initialized_from_identity,
         "trained_flow_path": payload.relative_to(flow_root).as_posix(),
         "monitor_path": monitor_path.relative_to(flow_root).as_posix(),
     }
@@ -220,6 +226,7 @@ def _record_run_state(
     complete: bool,
     accepted_stage_count: int,
     final_t: float,
+    initialized_from_identity: bool,
     terminal_reason: str | None = None,
     terminal_stage: int | None = None,
     terminal_t: float | None = None,
@@ -232,7 +239,12 @@ def _record_run_state(
     if manifest_path.is_file():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     else:
-        manifest = {"schema_version": 1, "attempts": []}
+        manifest = {
+            "schema_version": 2,
+            "initialized_from_identity": initialized_from_identity,
+            "attempts": [],
+        }
+    manifest["initialized_from_identity"] = initialized_from_identity
     run_state = {
         "status": "complete" if complete else "incomplete",
         "accepted_stage_count": accepted_stage_count,
@@ -309,6 +321,7 @@ def _boltzmann_forward_G(
     ladder: int,
     mc_dt: float,
     mc_steps: int,
+    initialize_from_identity: bool = True,
     coeff_lambda: float = 1.0,
     monitor=None,
     bg_param: dict | None = None,
@@ -344,6 +357,9 @@ def _boltzmann_forward_G(
     if x_valid.ndim != 2 or x_valid.shape[0] < 1:
         raise ValueError(f"x_valid must have shape [N, d], got {x_valid.shape}")
     pool_size = integer("pool_size", pool_size, minimum=0)
+    initialize_from_identity = boolean(
+        "initialize_from_identity", initialize_from_identity
+    )
     full_pool = pool_size == 0
     selection_pool_mode = "full" if full_pool else "with_replacement"
     selection_pool_size = x_valid.shape[0] if full_pool else pool_size
@@ -490,6 +506,7 @@ def _boltzmann_forward_G(
         valid_identity_ess_hist = []
         attempt_status_hist = []
         trained_flow_path_hist = []
+        stage_flow = flow
         for attempt in range(1, parameters["max_retry"] + 1):
             if not candidate_t > previous_t:
                 status(
@@ -526,13 +543,12 @@ def _boltzmann_forward_G(
             trainer_seed = jax.random.key_data(
                 _operation_key(base_key, 2, stage_index, attempt)
             )[0]
-            # Every bridge trains a fresh incremental map from the previous
-            # potential to the candidate potential.  Reusing the preceding
-            # bridge map would apply that increment a second time and can send
-            # molecular coordinates directly into a collision singularity.
-            # The same exact identity is also the stage ESS fallback.
-            attempt_flow = flow.zeros()
-            identity_flow = attempt_flow
+            # Every retry restarts from the stage-entry template. The trainer
+            # optionally zeros that template; rejected candidates are never
+            # reused. Validation always compares against a separately built
+            # exact identity map.
+            attempt_flow = stage_flow
+            identity_flow = stage_flow.zeros()
             hat_acceptance = None
             if _objective == "klxx":
                 qt_seed, qt_key = jax.random.split(
@@ -569,6 +585,7 @@ def _boltzmann_forward_G(
                     batch_size,
                     train_steps,
                     lr,
+                    initialize_from_identity=initialize_from_identity,
                     coeff_lambda=coeff_lambda,
                     coeff_alpha=_coeff_alpha,
                     coeff_beta=_coeff_beta,
@@ -593,6 +610,7 @@ def _boltzmann_forward_G(
                     batch_size,
                     train_steps,
                     lr,
+                    initialize_from_identity=initialize_from_identity,
                     coeff_lambda=coeff_lambda,
                     energy_origin=energy_origin,
                     e_clip=e_clip,
@@ -675,6 +693,7 @@ def _boltzmann_forward_G(
                     selected=selected_label,
                     selection_pool_mode=selection_pool_mode,
                     selection_pool_size=selection_pool_size,
+                    initialized_from_identity=initialize_from_identity,
                     batch_ess=ess_history,
                     kept_fraction=kept_history,
                     update_applied=update_history,
@@ -724,6 +743,7 @@ def _boltzmann_forward_G(
                     "valid_sample_count": particles.shape[0],
                     "selection_pool_mode": selection_pool_mode,
                     "selection_pool_size": selection_pool_size,
+                    "initialized_from_identity": initialize_from_identity,
                     "selected": selected_label,
                     "flow": selected_flow,
                     "t_hist": jnp.asarray(t_hist),
@@ -778,6 +798,7 @@ def _boltzmann_forward_G(
         complete=complete,
         accepted_stage_count=len(stages),
         final_t=previous_t,
+        initialized_from_identity=initialize_from_identity,
         terminal_reason=terminal_reason,
         terminal_stage=terminal_stage,
         terminal_t=terminal_t,
@@ -802,6 +823,7 @@ def boltzmann_forward_KLX_G(
     ladder: int,
     mc_dt: float,
     mc_steps: int,
+    initialize_from_identity: bool = True,
     coeff_lambda: float = 1.0,
     monitor=None,
     bg_param: dict | None = None,
@@ -839,6 +861,7 @@ def boltzmann_forward_KLX_G(
         ladder=ladder,
         mc_dt=mc_dt,
         mc_steps=mc_steps,
+        initialize_from_identity=initialize_from_identity,
         coeff_lambda=coeff_lambda,
         monitor=monitor,
         bg_param=bg_param,
@@ -869,6 +892,7 @@ def boltzmann_forward_KLXX_G(
     melt: float,
     opt_alpha: float,
     opt_steps: int,
+    initialize_from_identity: bool = True,
     coeff_lambda: float = 1.0,
     coeff_alpha: float = 0.5,
     coeff_beta: float = 0.5,
@@ -905,6 +929,7 @@ def boltzmann_forward_KLXX_G(
         ladder=ladder,
         mc_dt=mc_dt,
         mc_steps=mc_steps,
+        initialize_from_identity=initialize_from_identity,
         coeff_lambda=coeff_lambda,
         monitor=monitor,
         bg_param=bg_param,

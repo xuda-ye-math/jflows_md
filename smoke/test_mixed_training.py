@@ -118,6 +118,7 @@ def main() -> None:
             ladder=2,
             mc_dt=1e-3,
             mc_steps=1,
+            initialize_from_identity=False,
             coeff_lambda=1.0,
             bg_param={
                 "t_safe": 1.0,
@@ -143,7 +144,10 @@ def main() -> None:
         manifest = json.loads(
             (Path(temporary) / "attempts.json").read_text(encoding="utf-8")
         )
+        assert manifest["schema_version"] == 2
+        assert manifest["initialized_from_identity"] is False
         assert manifest["run_state"]["status"] == "complete"
+        assert manifest["attempts"][0]["initialized_from_identity"] is False
         assert manifest["attempts"][0]["selected_flow_path"] == selected_path
         assert manifest["attempts"][0]["valid_selected_ess"] == stages[0][
             "valid_selected_ess"
@@ -178,6 +182,7 @@ def main() -> None:
         ladder=2,
         mc_dt=1e-3,
         mc_steps=1,
+        initialize_from_identity=False,
         coeff_lambda=1.0,
         bg_param={
             "t_safe": 1.0,
@@ -204,6 +209,7 @@ def main() -> None:
     assert particles.shape == x_valid.shape
     assert bool(jnp.isfinite(particles).all())
     assert len(stages) == 1 and stages[0]["t"] == 1.0
+    assert stages[0]["initialized_from_identity"] is False
     assert stages[0]["valid_sample_count"] == x_valid.shape[0]
     assert 0.0 < stages[0]["valid_selected_ess"] <= 1.0
     assert 0.0 < stages[0]["valid_trained_ess"] <= 1.0
@@ -271,6 +277,7 @@ def main() -> None:
     assert klxx_stages[0]["objective"] == "klxx"
     assert klxx_stages[0]["selection_pool_mode"] == "full"
     assert klxx_stages[0]["selection_pool_size"] == x_valid.shape[0]
+    assert klxx_stages[0]["initialized_from_identity"] is True
     assert abs(
         klxx_stages[0]["valid_selected_ess"]
         - max(

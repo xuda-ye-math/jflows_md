@@ -5,6 +5,16 @@ from __future__ import annotations
 import math
 import operator
 
+import numpy as np
+
+
+def boolean(name: str, value) -> bool:
+    """Return a host Boolean while rejecting numeric and traced substitutes."""
+
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    raise ValueError(f"{name} must be a Python or NumPy boolean, got {value!r}")
+
 
 def integer(name: str, value, minimum: int = 1) -> int:
     """Return an integer-like value after enforcing a lower bound."""

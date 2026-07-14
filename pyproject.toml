@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jflows-md"
-version = "0.2.1"
+version = "0.3.0"
 description = "Mixed-domain molecular potentials, flows, and samplers for jflows."
 readme = "README.md"
 authors = [{ name = "Xuda", email = "abneryepku@gmail.com" }]

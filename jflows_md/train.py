@@ -11,7 +11,7 @@ from jax import Array, lax
 
 from jflows.utils import compute_ESS_log, resample
 
-from .core.checks import integer, nonnegative_real
+from .core.checks import boolean, integer, nonnegative_real
 from .core.domain import Mixed_Domain
 from .utils import _mixed_mala_chunk
 
@@ -172,7 +172,7 @@ def _adam_step(
 
 
 @eqx.filter_jit
-def train_forward_KLX_G(
+def _train_forward_KLX_G(
     target_samples: Array,
     source_samples: Array,
     source,
@@ -327,7 +327,7 @@ def train_forward_KLX_G(
 
 
 @eqx.filter_jit
-def train_forward_KLXX_G(
+def _train_forward_KLXX_G(
     target_samples: Array,
     source_samples: Array,
     hat_samples: Array,
@@ -533,3 +533,116 @@ def train_forward_KLXX_G(
     )
     trained = eqx.combine(params, static)
     return trained, ess, kept, updated
+
+
+def train_forward_KLX_G(
+    target_samples: Array,
+    source_samples: Array,
+    source,
+    target,
+    flow,
+    batch_size: int,
+    train_steps: int,
+    lr: float,
+    *,
+    initialize_from_identity: bool = False,
+    coeff_lambda: float = 1.0,
+    energy_origin: Array | float = 0.0,
+    e_clip: float = float("inf"),
+    g_clip: float = float("inf"),
+    monitor=None,
+    seed: int | Array = 0,
+    checkpoint: bool = False,
+    lr_warmup: int = 0,
+) -> tuple:
+    """Train molecular KL+X, optionally resetting the supplied flow first.
+
+    ``initialize_from_identity=False`` preserves the supplied flow exactly as
+    the optimizer template. ``True`` trains an exact ``flow.zeros()`` copy;
+    the caller's Equinox object is never mutated.
+    """
+
+    initialize_from_identity = boolean(
+        "initialize_from_identity", initialize_from_identity
+    )
+    if initialize_from_identity:
+        flow = flow.zeros()
+    return _train_forward_KLX_G(
+        target_samples,
+        source_samples,
+        source,
+        target,
+        flow,
+        batch_size,
+        train_steps,
+        lr,
+        coeff_lambda=coeff_lambda,
+        energy_origin=energy_origin,
+        e_clip=e_clip,
+        g_clip=g_clip,
+        monitor=monitor,
+        seed=seed,
+        checkpoint=checkpoint,
+        lr_warmup=lr_warmup,
+    )
+
+
+def train_forward_KLXX_G(
+    target_samples: Array,
+    source_samples: Array,
+    hat_samples: Array,
+    source,
+    target,
+    flow,
+    domain: Mixed_Domain,
+    batch_size: int,
+    train_steps: int,
+    lr: float,
+    *,
+    initialize_from_identity: bool = False,
+    coeff_lambda: float = 1.0,
+    coeff_alpha: float = 0.5,
+    coeff_beta: float = 0.5,
+    mc_dt: float = 1e-3,
+    mc_steps: int = 1,
+    mc_image_radius: int = 3,
+    energy_origin: Array | float = 0.0,
+    e_clip: float = float("inf"),
+    g_clip: float = float("inf"),
+    monitor=None,
+    seed: int | Array = 0,
+    checkpoint: bool = False,
+    lr_warmup: int = 0,
+) -> tuple:
+    """Train molecular KLXX, optionally resetting the supplied flow first."""
+
+    initialize_from_identity = boolean(
+        "initialize_from_identity", initialize_from_identity
+    )
+    if initialize_from_identity:
+        flow = flow.zeros()
+    return _train_forward_KLXX_G(
+        target_samples,
+        source_samples,
+        hat_samples,
+        source,
+        target,
+        flow,
+        domain,
+        batch_size,
+        train_steps,
+        lr,
+        coeff_lambda=coeff_lambda,
+        coeff_alpha=coeff_alpha,
+        coeff_beta=coeff_beta,
+        mc_dt=mc_dt,
+        mc_steps=mc_steps,
+        mc_image_radius=mc_image_radius,
+        energy_origin=energy_origin,
+        e_clip=e_clip,
+        g_clip=g_clip,
+        monitor=monitor,
+        seed=seed,
+        checkpoint=checkpoint,
+        lr_warmup=lr_warmup,
+    )

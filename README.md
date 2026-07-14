@@ -71,15 +71,23 @@ target:
 ```python
 soft = target.regularized(
     50.0,
-    energy_scale_kj_mol=50.0,
-    tail_fraction=0.01,
+    pair_distance_floor_nm=0.10,
 )
 ```
 
-The cutoff is the Cartesian energy excess above the bundle reference in
-kJ/mol. The lin-log scale controls compression above the cutoff and
-`tail_fraction` retains a coercive linear component. The coordinate Jacobian
-is never regularized.
+`energy_threshold_kj_mol` is the Cartesian energy excess above the
+floor-aware bundle reference at which a C1 linear/logarithmic map begins.
+`pair_distance_floor_nm` floors only distances used by Amber regular-pair and
+exception Coulomb/Lennard-Jones terms; bonded terms and OBC1/ACE retain their
+physical distances. Set the distance floor to zero for energy-only
+regularization. The coordinate Jacobian is never regularized, and
+`soft.physical_energy(q)` always reports the untouched physical bundle energy.
+Positive floors that are too small for finite active nonbonded arithmetic in
+the force-field dtype are rejected; use exactly zero for energy-only mode.
+The pure-log surrogate is a training/diagnostic bridge whose normalizability
+must be audited for the chosen mixed chart; it is not a physical endpoint.
+The optimizer screen `e_clip` is dimensionless and unrelated to the kJ/mol
+energy threshold.
 
 ## Package layout
 
@@ -203,6 +211,18 @@ Training and Boltzmann drivers use `batch_size`, `pool_size`, `train_steps`,
 row partitions and fewer physical samples in each compiled call. `ladder` is
 the number of bridge levels.
 
+The direct molecular trainers accept
+`initialize_from_identity=False`: by default they train the supplied flow,
+while `True` first replaces the optimizer template with `flow.zeros()`.
+Molecular Boltzmann drivers default this option to `True`, so every stage and
+retry starts from an exact identity parameterization. Setting it to `False`
+warm-starts stage 1 from the caller flow and later stages from the preceding
+selected flow; retries still restart from the stage-entry template. In both
+modes, the full-validation gate independently compares the trained endpoint
+with an exact identity map, and validation ESS remains the sole post-training
+acceptance rule. Saved attempt manifests record the resolved initialization
+choice under schema version 2.
+
 For molecular Boltzmann drivers, a positive `pool_size` retains the standard
 with-replacement selection pool. Setting `pool_size=0` is an explicit
 full-pool mode: SMC and training receive every current validation particle
@@ -218,8 +238,10 @@ G-native and therefore does not take a direction string.
 
 The adaptive full-validation gate compares the trained flow with exact
 identity. The higher ESS is the sole candidate and is accepted exactly when it
-clears `tau_ess`. Every stage attempt trains a fresh identity-initialized
-incremental flow between its previous and candidate bridge potentials. The
+clears `tau_ess`. By default, every stage attempt trains a freshly
+identity-initialized incremental flow between its previous and candidate
+bridge potentials; `initialize_from_identity=False` instead uses the fixed
+stage-entry template described above. The
 `checkpoint` argument controls backward-pass
 rematerialization; persistent flow artifacts are enabled separately with
 `flow_dir`.

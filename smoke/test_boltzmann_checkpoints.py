@@ -311,6 +311,8 @@ def test_full_pool_input_validation() -> None:
         {"pool_size": False},
         {"pool_size": 0, "batch_size": samples.shape[0] + 1},
         {"pool_size": 0, "chunks": samples.shape[0] + 1},
+        {"initialize_from_identity": 1},
+        {"initialize_from_identity": jnp.asarray(True)},
     ):
         try:
             run_driver(samples, potential, flow, **overrides)
@@ -320,15 +322,19 @@ def test_full_pool_input_validation() -> None:
             raise AssertionError(f"invalid full-pool controls accepted: {overrides}")
 
 
-def test_each_stage_attempt_starts_from_identity_and_trained_tie_wins() -> None:
-    samples, potential, flow = common_inputs()
-    seen = []
+def test_default_initialization_resets_each_stage_and_trained_tie_wins() -> None:
+    samples, potential, _ = common_inputs()
+    flow = Probe_Flow(jnp.asarray([5.0]))
+    seen, flags = [], []
 
     def trainer(pool, source_pool, previous, current, initial, batch_size, train_steps, lr, **kwargs):
-        del pool, source_pool, previous, current, batch_size, lr, kwargs
+        del pool, source_pool, previous, current, batch_size, lr
         seen.append(float(initial.shift[0]))
+        initialize = kwargs.pop("initialize_from_identity")
+        flags.append(initialize)
+        template = initial.zeros() if initialize else initial
         return (
-            Probe_Flow(initial.shift + 1.0),
+            Probe_Flow(template.shift + 1.0),
             jnp.ones((train_steps,)),
             jnp.ones((train_steps,)),
             jnp.ones((train_steps,), dtype=bool),
@@ -346,9 +352,11 @@ def test_each_stage_attempt_starts_from_identity_and_trained_tie_wins() -> None:
             ),
         )
 
-    assert seen == [0.0, 0.0], seen
+    assert seen == [5.0, 1.0], seen
+    assert flags == [True, True]
     assert len(stages) == 2 and stages[-1]["t"] == 1.0
     assert all(stage["selected"] == "trained" for stage in stages)
+    assert all(stage["initialized_from_identity"] is True for stage in stages)
     assert all(
         stage["valid_trained_ess"] == stage["valid_identity_ess"] == 1.0
         for stage in stages
@@ -358,6 +366,61 @@ def test_each_stage_attempt_starts_from_identity_and_trained_tie_wins() -> None:
         bool(jnp.array_equal(stage["t_hist"], jnp.asarray([stage["t"]])))
         for stage in stages
     )
+
+
+def test_false_warm_starts_later_stage_and_identity_selection_resets_it() -> None:
+    samples, potential, _ = common_inputs()
+    flow = Probe_Flow(jnp.asarray([5.0]))
+    seen = []
+
+    def trainer(pool, source_pool, previous, current, initial, batch_size, train_steps, lr, **kwargs):
+        del pool, source_pool, previous, current, batch_size, lr
+        assert kwargs.pop("initialize_from_identity") is False
+        seen.append(float(initial.shift[0]))
+        return (
+            Probe_Flow(initial.shift + 1.0),
+            jnp.ones((train_steps,)),
+            jnp.ones((train_steps,)),
+            jnp.ones((train_steps,), dtype=bool),
+        )
+
+    with patched_driver(trainer=trainer, identity_weights=zero_identity_weights):
+        _, trained_stages = run_driver(
+            samples,
+            potential,
+            flow,
+            initialize_from_identity=False,
+            bg_param=controls(t_safe=0.4, enlarge_factor=1.5, max_stages=2),
+        )
+    assert seen == [5.0, 6.0]
+    assert all(stage["selected"] == "trained" for stage in trained_stages)
+    assert all(
+        stage["initialized_from_identity"] is False for stage in trained_stages
+    )
+
+    seen.clear()
+
+    def poor_weights(samples, source, target, candidate, chunks):
+        del source, target, candidate, chunks
+        values = jnp.full((samples.shape[0],), -10.0, dtype=samples.dtype)
+        return values.at[0].set(0.0)
+
+    with patched_driver(
+        trainer=trainer,
+        identity_weights=zero_identity_weights,
+        importance_weights=poor_weights,
+    ):
+        _, identity_stages = run_driver(
+            samples,
+            potential,
+            flow,
+            initialize_from_identity=False,
+            bg_param=controls(t_safe=0.4, enlarge_factor=1.5, max_stages=2),
+        )
+    assert seen == [5.0, 0.0]
+    assert all(stage["selected"] == "identity" for stage in identity_stages)
+
+
 def test_only_final_endpoint_is_scored() -> None:
     samples, potential, _ = common_inputs()
     flow = Probe_Flow(jnp.full((1,), 2.0))
@@ -457,11 +520,13 @@ def test_identity_rescues_nonfinite_final() -> None:
 
 
 def test_retry_smc_is_diagnostic_after_validation_rejection() -> None:
-    samples, potential, flow = common_inputs()
+    samples, potential, _ = common_inputs()
+    flow = Probe_Flow(jnp.asarray([4.0]))
     trainer_calls, initial_shifts, smc_calls, lines = [], [], [], []
 
     def trainer(pool, source_pool, previous, current, initial, batch_size, train_steps, lr, **kwargs):
-        del pool, source_pool, previous, current, batch_size, lr, kwargs
+        del pool, source_pool, previous, current, batch_size, lr
+        assert kwargs.pop("initialize_from_identity") is False
         trainer_calls.append(True)
         initial_shifts.append(float(initial.shift[0]))
         return (
@@ -499,6 +564,7 @@ def test_retry_smc_is_diagnostic_after_validation_rejection() -> None:
             samples,
             potential,
             flow,
+            initialize_from_identity=False,
             monitor=SimpleNamespace(printer=lines.append),
             bg_param=controls(
                 shrink_factor=0.7,
@@ -509,7 +575,7 @@ def test_retry_smc_is_diagnostic_after_validation_rejection() -> None:
         )
 
     assert len(trainer_calls) == 2 and len(smc_calls) == 2
-    assert initial_shifts == [0.0, 0.0], initial_shifts
+    assert initial_shifts == [4.0, 4.0], initial_shifts
     assert len(stages) == 1 and stages[0]["t"] == 0.7
     assert stages[0]["valid_selected_ess"] == 1.0
     assert stages[0]["attempt_status_hist"] == ("rejected", "accepted")
@@ -549,6 +615,8 @@ def test_selection_failure_is_manifested() -> None:
         manifest = json.loads(
             (Path(temporary) / "attempts.json").read_text(encoding="utf-8")
         )
+        assert manifest["schema_version"] == 2
+        assert manifest["initialized_from_identity"] is True
         assert manifest["attempts"] == []
         run_state = manifest["run_state"]
         assert run_state["status"] == "incomplete"
@@ -557,16 +625,90 @@ def test_selection_failure_is_manifested() -> None:
         assert 0.0 < run_state["terminal_t"] <= 1.0
 
 
+def test_default_true_retries_and_terminal_manifest() -> None:
+    samples, potential, _ = common_inputs()
+    flow = Probe_Flow(jnp.asarray([4.0]))
+    initial_shifts, flags = [], []
+
+    def trainer(pool, source_pool, previous, current, initial, batch_size, train_steps, lr, **kwargs):
+        del pool, source_pool, previous, current, batch_size, lr
+        initial_shifts.append(float(initial.shift[0]))
+        flags.append(kwargs.pop("initialize_from_identity"))
+        candidate = Probe_Flow(jnp.asarray([float(len(initial_shifts))]))
+        return (
+            candidate,
+            jnp.ones((train_steps,)),
+            jnp.ones((train_steps,)),
+            jnp.ones((train_steps,), dtype=bool),
+        )
+
+    def peaked_weights(samples, *args):
+        del args
+        values = jnp.full((samples.shape[0],), -10.0, dtype=samples.dtype)
+        return values.at[0].set(0.0)
+
+    original_save = bg.save_mixed_flow
+
+    def save_probe(path, candidate):
+        del candidate
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("probe flow\n", encoding="utf-8")
+
+    try:
+        bg.save_mixed_flow = save_probe
+        with tempfile.TemporaryDirectory() as temporary:
+            with patched_driver(
+                trainer=trainer,
+                identity_weights=peaked_weights,
+                importance_weights=peaked_weights,
+            ):
+                _, stages = run_driver(
+                    samples,
+                    potential,
+                    flow,
+                    flow_dir=temporary,
+                    monitor=SimpleNamespace(printer=lambda _: None),
+                    bg_param=controls(
+                        tau_ess=0.9,
+                        shrink_factor=0.7,
+                        max_retry=2,
+                    ),
+                )
+            assert stages == []
+            manifest = json.loads(
+                (Path(temporary) / "attempts.json").read_text(encoding="utf-8")
+            )
+            assert manifest["schema_version"] == 2
+            assert manifest["initialized_from_identity"] is True
+            assert len(manifest["attempts"]) == 2
+            assert all(
+                record["status"] == "rejected"
+                and record["initialized_from_identity"] is True
+                for record in manifest["attempts"]
+            )
+            assert manifest["run_state"]["status"] == "incomplete"
+            assert manifest["run_state"]["terminal_reason"] == (
+                "training_attempts_failed"
+            )
+    finally:
+        bg.save_mixed_flow = original_save
+
+    assert initial_shifts == [4.0, 4.0]
+    assert flags == [True, True]
+
+
 def main() -> None:
     test_full_pool_and_positive_pool_paths()
     test_full_pool_klxx_uses_fresh_qt_source_population()
     test_full_pool_input_validation()
-    test_each_stage_attempt_starts_from_identity_and_trained_tie_wins()
+    test_default_initialization_resets_each_stage_and_trained_tie_wins()
+    test_false_warm_starts_later_stage_and_identity_selection_resets_it()
     test_only_final_endpoint_is_scored()
     test_zero_updates_reaches_final_ess_gate()
     test_identity_rescues_nonfinite_final()
     test_retry_smc_is_diagnostic_after_validation_rejection()
     test_selection_failure_is_manifested()
+    test_default_true_retries_and_terminal_manifest()
     print("PASS molecular final-versus-identity and validation-ESS regressions")
 
 

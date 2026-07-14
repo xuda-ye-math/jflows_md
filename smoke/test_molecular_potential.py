@@ -66,60 +66,51 @@ def check_rigid_motion_quotient_jacobian(bundle: Molecular_Bundle) -> None:
     np.testing.assert_allclose(reported, autodiff, rtol=0, atol=1e-11)
 
 def check_regularized_potential() -> None:
-    """Check the explicit soft-energy surrogate without changing the target."""
+    """Check the public e/r surrogate without changing the physical target."""
 
     potential = Molecular_Potential.from_bundle(
         "glycerol_gaff2_am1bcc_obc1"
     )
-    regularized = potential.regularized(
-        100.0,
-        energy_scale_kj_mol=50.0,
-    )
+    regularized = potential.regularized(100.0)
     reference = potential.reference_internal()[None]
     np.testing.assert_allclose(
         regularized(reference), potential(reference), rtol=0, atol=1e-12
     )
+    np.testing.assert_allclose(
+        regularized.cartesian(reference), potential.cartesian(reference), rtol=0, atol=0
+    )
 
     q = potential.source().samples(jax.random.key(701), N=16)
     physical = potential.physical_energy(q)
-    deformed = regularized.regularized_physical_energy(q)
+    deformed = regularized.regularized_energy(q)
     excess = physical - regularized.reference_energy_kj_mol
     over = jnp.maximum(excess - 100.0, 0.0)
     expected_energy = regularized.reference_energy_kj_mol + jnp.where(
         excess > 100.0,
-        100.0 + 50.0 * jnp.log1p(over / 50.0),
+        100.0 + 100.0 * jnp.log1p(over / 100.0),
         excess,
     )
     np.testing.assert_allclose(deformed, expected_energy, rtol=0, atol=1e-12)
+    np.testing.assert_allclose(regularized.physical_energy(q), physical, rtol=0, atol=0)
     assert bool(jnp.all(deformed <= physical))
 
     _, logdet = potential.coordinates.to_cartesian(q)
     np.testing.assert_allclose(
         regularized(q), potential.beta * deformed - logdet, rtol=0, atol=1e-11
     )
-    higher_cut = potential.regularized(200.0, energy_scale_kj_mol=50.0)
+    higher_cut = potential.regularized(200.0)
     assert bool(
         jnp.all(
-            higher_cut.regularized_physical_energy(q)
-            >= regularized.regularized_physical_energy(q)
+            higher_cut.regularized_energy(q)
+            >= regularized.regularized_energy(q)
         )
     )
     assert regularized.domain is potential.domain
-    identity_tail = potential.regularized(
-        100.0, energy_scale_kj_mol=50.0, tail_fraction=1.0
-    )
-    np.testing.assert_allclose(
-        identity_tail.regularized_physical_energy(q), physical, rtol=0, atol=1e-12
-    )
-    for tail_fraction in (0.0, 1.0):
-        endpoint = potential.regularized(
-            100.0,
-            energy_scale_kj_mol=50.0,
-            tail_fraction=tail_fraction,
-        )
-        infinite = endpoint._regularize_energy(jnp.asarray([jnp.inf]))
-        assert bool(jnp.isposinf(infinite[0]))
-        assert not bool(jnp.isnan(infinite[0]))
+    assert float(regularized.energy_threshold_kj_mol) == 100.0
+    assert float(regularized.pair_distance_floor_nm) == 0.0
+    infinite = regularized._regularize_energy(jnp.asarray([jnp.inf]))
+    assert bool(jnp.isposinf(infinite[0]))
+    assert not bool(jnp.isnan(infinite[0]))
 
     cut = regularized.reference_energy_kj_mol + 100.0
     left = jax.grad(lambda value: regularized._regularize_energy(value))(cut - 1e-3)
@@ -127,19 +118,21 @@ def check_regularized_potential() -> None:
     np.testing.assert_allclose(left, 1.0, rtol=0, atol=1e-6)
     np.testing.assert_allclose(right, 1.0, rtol=0, atol=3e-5)
 
-    for kwargs in (
-        {"energy_cut_kj_mol": 0.0},
-        {"energy_cut_kj_mol": 100.0, "energy_scale_kj_mol": 0.0},
-        {"energy_cut_kj_mol": 100.0, "tail_fraction": -0.1},
+    for args, kwargs in (
+        ((0.0,), {}),
+        ((100.0,), {"pair_distance_floor_nm": -0.1}),
+        ((jnp.inf,), {}),
+        ((True,), {}),
+        ((jnp.asarray([100.0]),), {}),
     ):
         try:
-            potential.regularized(**kwargs)
+            potential.regularized(*args, **kwargs)
         except ValueError:
             pass
         else:
             raise AssertionError("invalid molecular regularization was accepted")
 
-    print("PASS shift-invariant molecular energy regularization")
+    print("PASS molecular e/r regularization API")
 
 
 def check_temperature_override() -> None:

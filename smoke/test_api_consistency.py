@@ -75,6 +75,14 @@ def main() -> None:
     assert "snapshot_steps" not in inspect.signature(train_forward_KLXX_G).parameters
     assert "selection_steps" not in inspect.signature(boltzmann_forward_KLX_G).parameters
     assert "selection_steps" not in inspect.signature(boltzmann_forward_KLXX_G).parameters
+    for function in (train_forward_KLX_G, train_forward_KLXX_G):
+        assert inspect.signature(function).parameters[
+            "initialize_from_identity"
+        ].default is False
+    for function in (boltzmann_forward_KLX_G, boltzmann_forward_KLXX_G):
+        assert inspect.signature(function).parameters[
+            "initialize_from_identity"
+        ].default is True
     assert tuple(inspect.signature(train_forward_KLX_G).parameters)[5:8] == (
         "batch_size",
         "train_steps",

@@ -14,6 +14,14 @@ GB_COULOMB = 138.935485
 GB_OFFSET_NM = 0.009
 
 
+def _distance_with_zero_subgradient(distance_squared: Array) -> Array:
+    """Take a square root with the declared zero subgradient at coincidence."""
+
+    positive = distance_squared > 0
+    safe_squared = jnp.where(positive, distance_squared, 1.0)
+    return jnp.where(positive, jnp.sqrt(safe_squared), 0.0)
+
+
 def _array(
     spec: Mapping,
     name: str,
@@ -115,30 +123,139 @@ class Amber_OBC_Force_Field(eqx.Module):
             axis=-1,
         )
 
+    @staticmethod
+    def _pair_energy_with_floor(
+        x: Array,
+        idx: Array,
+        chargeprod: Array,
+        sigma: Array,
+        epsilon: Array,
+        pair_distance_floor_nm: Array,
+    ) -> Array:
+        """Return collision-safe nonbonded energy at a hard pair floor.
+
+        The floor applies only to Amber ``NonbondedForce`` regular pairs and
+        exceptions. At a zero-floor exact coincidence, active Lennard-Jones
+        interactions are classified as ``+inf`` before Coulomb and inactive
+        coefficients are masked before reciprocal powers.
+        """
+
+        if idx.shape[0] == 0:
+            return jnp.zeros(x.shape[0], dtype=x.dtype)
+        displacement = x[:, idx[:, 0]] - x[:, idx[:, 1]]
+        distance_squared = jnp.sum(displacement * displacement, axis=-1)
+        distance = _distance_with_zero_subgradient(distance_squared)
+        effective_distance = jnp.maximum(distance, pair_distance_floor_nm)
+        collision = (distance_squared == 0) & (pair_distance_floor_nm == 0)
+        safe_distance = jnp.where(collision, 1.0, effective_distance)
+        inverse = 1.0 / safe_distance
+
+        charge_active = chargeprod != 0
+        coulomb = COULOMB * chargeprod * jnp.where(charge_active, inverse, 0.0)
+
+        lj_active = (epsilon > 0) & (sigma > 0)
+        active_sigma = jnp.where(lj_active, sigma, 0.0)
+        sr6 = (active_sigma * inverse) ** 6
+        lennard_jones = jnp.where(
+            lj_active,
+            4.0 * epsilon * sr6 * (sr6 - 1.0),
+            0.0,
+        )
+        regular = coulomb + lennard_jones
+        coulomb_collision = jnp.where(
+            chargeprod > 0,
+            jnp.inf,
+            jnp.where(chargeprod < 0, -jnp.inf, 0.0),
+        )
+        collision_energy = jnp.where(lj_active, jnp.inf, coulomb_collision)
+        return jnp.sum(jnp.where(collision, collision_energy, regular), axis=-1)
+
+    @staticmethod
+    def _obc_descreening_integral(
+        distance: Array,
+        radius_i: Array,
+        scaled_j: Array,
+        eye: Array,
+    ) -> Array:
+        """Stable Amber ``igb=2`` directed descreening integral.
+
+        OpenMM's exact expression is retained away from coincidence. Small
+        ``d/s`` series avoid subtracting divergent terms for ``s >= a``.
+        The limiting value and chosen Cartesian subgradient at ``d=0`` are
+        both zero; the latter is supplied by ``_distance_with_zero_subgradient``.
+        """
+
+        dtype = distance.dtype
+        series_ratio = jnp.asarray(jnp.finfo(dtype).eps ** 0.25, dtype=dtype)
+        safe_scaled = jnp.where(scaled_j > 0, scaled_j, 1.0)
+        scaled_ratio = distance / safe_scaled
+        small = scaled_ratio < series_ratio
+        series_gt = (
+            scaled_ratio
+            + scaled_ratio**2 / 3.0
+            + scaled_ratio**3
+            + 2.0 * scaled_ratio**4 / 5.0
+            + scaled_ratio**5
+            + 3.0 * scaled_ratio**6 / 7.0
+        ) / safe_scaled
+        use_series_gt = (
+            (~eye)
+            & (scaled_j > radius_i)
+            & (distance < scaled_j - radius_i)
+            & small
+        )
+
+        safe_radius = jnp.where(radius_i > 0, radius_i, 1.0)
+        radius_ratio = distance / safe_radius
+        series_eq = (
+            radius_ratio / 4.0
+            - radius_ratio**2 / 3.0
+            + 5.0 * radius_ratio**3 / 16.0
+            - 3.0 * radius_ratio**4 / 10.0
+            + 7.0 * radius_ratio**5 / 24.0
+            - 2.0 * radius_ratio**6 / 7.0
+        ) / safe_radius
+        use_series_eq = (
+            (~eye) & (scaled_j == radius_i) & (radius_ratio < series_ratio)
+        )
+
+        use_general = (~eye) & (~use_series_gt) & (~use_series_eq)
+        safe_distance = jnp.where(use_general & (distance > 0), distance, 1.0)
+        upper = safe_distance + scaled_j
+        lower = jnp.maximum(radius_i, jnp.abs(safe_distance - scaled_j))
+        safe_upper = jnp.where(use_general, upper, 1.0)
+        safe_lower = jnp.where(use_general, lower, 1.0)
+        inv_lower, inv_upper = 1.0 / safe_lower, 1.0 / safe_upper
+        general = 0.5 * (
+            inv_lower
+            - inv_upper
+            + 0.25
+            * (safe_distance - scaled_j * scaled_j / safe_distance)
+            * (inv_upper * inv_upper - inv_lower * inv_lower)
+            + 0.5 * jnp.log(safe_lower / safe_upper) / safe_distance
+        )
+        integral = jnp.where(
+            use_series_gt,
+            series_gt,
+            jnp.where(use_series_eq, series_eq, general),
+        )
+        valid = (distance + scaled_j - radius_i >= 0.0) & (~eye)
+        return jnp.where(valid, integral, 0.0)
+
     def _gb_energy(self, x: Array) -> Array:
         difference = x[:, :, None, :] - x[:, None, :, :]
         distance_squared = jnp.sum(difference * difference, axis=-1)
         eye = jnp.eye(self.n_atoms, dtype=bool)[None, :, :]
-        # The diagonal has r=0 physically, but differentiating norm(0) produces
-        # NaNs. The descreening diagonal is excluded, so give only that branch a
-        # constant safe distance. Polarization below uses r^2 directly and
-        # retains the exact self term f_ii=B_i with a well-defined derivative.
-        integral_distance = jnp.sqrt(jnp.where(eye, 1.0, distance_squared))
+        integral_distance = _distance_with_zero_subgradient(distance_squared)
         radius_i = self.gb_or[None, :, None]
         scaled_j = self.gb_sr[None, None, :]
-        upper = integral_distance + scaled_j
-        lower = jnp.maximum(radius_i, jnp.abs(integral_distance - scaled_j))
-        inv_lower, inv_upper = 1.0 / lower, 1.0 / upper
-        integral = 0.5 * (
-            inv_lower
-            - inv_upper
-            + 0.25
-            * (integral_distance - scaled_j * scaled_j / integral_distance)
-            * (inv_upper * inv_upper - inv_lower * inv_lower)
-            + 0.5 * jnp.log(lower / upper) / integral_distance
+        integral = self._obc_descreening_integral(
+            integral_distance,
+            radius_i,
+            scaled_j,
+            eye,
         )
-        valid = (integral_distance + scaled_j - radius_i >= 0.0) & (~eye)
-        born_integral = jnp.sum(jnp.where(valid, integral, 0.0), axis=2)
+        born_integral = jnp.sum(integral, axis=2)
         psi = born_integral * self.gb_or[None, :]
         full_radius = self.gb_or + GB_OFFSET_NM
         tanh_argument = 0.8 * psi + 2.909125 * psi**3
@@ -164,7 +281,9 @@ class Amber_OBC_Force_Field(eqx.Module):
         )
         return polarization + ace
 
-    def energy_terms(self, x: Array) -> dict[str, Array]:
+    def _bonded_and_gb_terms(self, x: Array) -> dict[str, Array]:
+        """Evaluate terms shared by the raw and floor-aware energy paths."""
+
         bond_distance = jnp.linalg.norm(
             x[:, self.bond_idx[:, 0]] - x[:, self.bond_idx[:, 1]], axis=-1
         )
@@ -177,13 +296,24 @@ class Amber_OBC_Force_Field(eqx.Module):
             jnp.linalg.norm(first, axis=-1) * jnp.linalg.norm(second, axis=-1)
         )
         theta = jnp.arccos(jnp.clip(cosine, -1.0, 1.0))
-        angle = jnp.sum(0.5 * self.angle_k * (theta - self.angle_theta) ** 2, axis=-1)
+        angle = jnp.sum(
+            0.5 * self.angle_k * (theta - self.angle_theta) ** 2, axis=-1
+        )
         phi = self._dihedral(x, self.torsion_idx)
         torsion = jnp.sum(
             self.torsion_k
             * (1.0 + jnp.cos(self.torsion_periodicity * phi - self.torsion_phase)),
             axis=-1,
         )
+        return {
+            "bond": bond,
+            "angle": angle,
+            "torsion": torsion,
+            "gb": self._gb_energy(x),
+        }
+
+    def energy_terms(self, x: Array) -> dict[str, Array]:
+        terms = self._bonded_and_gb_terms(x)
         nonbonded = self._pair_energy(
             x, self.pair_idx, self.pair_chargeprod, self.pair_sigma, self.pair_epsilon
         ) + self._pair_energy(
@@ -193,16 +323,50 @@ class Amber_OBC_Force_Field(eqx.Module):
             self.exception_sigma,
             self.exception_epsilon,
         )
-        gb = self._gb_energy(x)
-        total = bond + angle + torsion + nonbonded + gb
+        total = (
+            terms["bond"]
+            + terms["angle"]
+            + terms["torsion"]
+            + nonbonded
+            + terms["gb"]
+        )
         return {
-            "bond": bond,
-            "angle": angle,
-            "torsion": torsion,
+            "bond": terms["bond"],
+            "angle": terms["angle"],
+            "torsion": terms["torsion"],
             "nonbonded": nonbonded,
-            "gb": gb,
+            "gb": terms["gb"],
             "total": total,
         }
+
+    def _energy_with_pair_distance_floor(
+        self, x: Array, pair_distance_floor_nm: Array
+    ) -> Array:
+        """Return total energy with only nonbonded pair distances floored."""
+
+        terms = self._bonded_and_gb_terms(x)
+        nonbonded = self._pair_energy_with_floor(
+            x,
+            self.pair_idx,
+            self.pair_chargeprod,
+            self.pair_sigma,
+            self.pair_epsilon,
+            pair_distance_floor_nm,
+        ) + self._pair_energy_with_floor(
+            x,
+            self.exception_idx,
+            self.exception_chargeprod,
+            self.exception_sigma,
+            self.exception_epsilon,
+            pair_distance_floor_nm,
+        )
+        return (
+            terms["bond"]
+            + terms["angle"]
+            + terms["torsion"]
+            + nonbonded
+            + terms["gb"]
+        )
 
     def __call__(self, x: Array) -> Array:
         return self.energy_terms(x)["total"]

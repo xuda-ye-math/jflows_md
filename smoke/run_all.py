@@ -18,9 +18,11 @@ TESTS = (
     "test_mixed_nsf.py",
     "test_jflows_md_chunking.py",
     "test_float32_training.py",
+    "test_initialization.py",
     "test_boltzmann_checkpoints.py",
     "test_mixed_training.py",
     "test_molecular_potential.py",
+    "test_regularization.py",
     "test_support_and_utils.py",
     "test_float32_glycerol_compile.py",
 )
