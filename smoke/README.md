@@ -9,7 +9,7 @@ XLA_PYTHON_CLIENT_PREALLOCATE=false python smoke/run_all.py
 This assumes the editable `jflows` and `jflows_md` installations described in
 the root README.
 
-The tests verify bundle hashes and metadata, pure-JAX energies and forces
+The tests verify the minimal bundle structure and metadata, pure-JAX energies and forces
 against stored OpenMM Reference results for all three molecules, BAT/chart
 round trips and Jacobians, ADP L-only support, full small-molecule parity
 support, source shapes, JIT compatibility, and the flat `jflows_md.utils`
@@ -22,11 +22,10 @@ invalid domains, sources, flows, MCMC controls, and bridge schedules. A public
 compatibility test verifies the committed `jflows`
 signatures and compiled stage-training scheme, chunked public sampling calls,
 and the transform primitives used by `jflows_md`. Molecular controller tests
-verify fixed-shape chunk execution, disjoint PRNG streams, versioned artifact
-round trips (including schema-2 activation, dtype, static masks, and stage
-counts), and the default float32 runtime. Bundle tests enforce complete
-hash/path closure, frozen built-in manifests and lineage, and consistent
-quotient-measure metadata. A bounded two-particle
+verify fixed-shape chunk execution, disjoint PRNG streams, current flow-artifact
+round trips (including activation, dtype, and static masks), and the default
+float32 runtime. Bundle tests enforce the exact six-file format, safe paths,
+and consistent quotient-measure metadata. A bounded two-particle
 glycerol test compiles the real energy/gradient and one MALA step. A tiny
 synthetic `R^2 x T^1` case compiles and runs mixed KL+X and KL+X+X trainers,
 final-versus-identity full-validation selection, positive-melt quench-and-temper,
@@ -38,10 +37,11 @@ nonfinite final flow, and ESS-only retry behavior. The float32 trainer smoke
 also verifies rematerialized training and mixed finite/infinite proposal-weight
 ESS. None of these launches a molecular training run.
 
-Rebuild the bundles only when their versioned model definition changes:
+Build a bundle from an Amber topology and coordinate file with:
 
 ```bash
-python bundles/build_molecular_bundles.py
+python bundles/build_molecular_bundles.py \
+  glycerol molecule.prmtop molecule.rst7 generated/glycerol
 ```
 
 ## Opt-in compilation benchmark

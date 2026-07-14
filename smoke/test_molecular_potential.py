@@ -65,20 +65,6 @@ def check_rigid_motion_quotient_jacobian(bundle: Molecular_Bundle) -> None:
     _, autodiff = jnp.linalg.slogdet(jacobian)
     np.testing.assert_allclose(reported, autodiff, rtol=0, atol=1e-11)
 
-    schema1_spec = dict(spec)
-    schema1_spec["schema_version"] = 1
-    schema1_spec.pop("jacobian_measure")
-    schema1_coordinates = Internal_Coordinates(schema1_spec)
-    schema1_logdet = schema1_coordinates.to_cartesian(q)[1][0]
-    bonds, angles, _, _, _, _ = coordinates._decode(q)
-    anchor = (
-        2.0 * jnp.log(bonds[0, 0])
-        + jnp.log(bonds[0, 1])
-        + jnp.log(jnp.sin(angles[0, 0]))
-    )
-    np.testing.assert_allclose(reported - schema1_logdet, anchor, rtol=0, atol=1e-12)
-
-
 def check_regularized_potential() -> None:
     """Check the explicit soft-energy surrogate without changing the target."""
 
@@ -119,7 +105,6 @@ def check_regularized_potential() -> None:
         )
     )
     assert regularized.domain is potential.domain
-    assert regularized.manifest_sha256 == potential.manifest_sha256
     identity_tail = potential.regularized(
         100.0, energy_scale_kj_mol=50.0, tail_fraction=1.0
     )
@@ -184,7 +169,6 @@ def check_temperature_override() -> None:
         guarded.variance, hot.source().variance, rtol=0, atol=0
     )
     assert hot.forcefield.n_atoms == cold.forcefield.n_atoms
-    assert hot.manifest_sha256 == cold.manifest_sha256
     for invalid in (0.0, -1.0, jnp.inf, jnp.nan):
         try:
             Molecular_Potential.from_bundle(

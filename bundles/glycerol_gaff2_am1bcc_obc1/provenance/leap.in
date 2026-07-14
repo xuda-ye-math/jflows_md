@@ -1,8 +1,0 @@
-source leaprc.gaff2
-set default PBRadii mbondi2
-loadamberparams gaff2.frcmod
-MOL = loadmol2 gaff2.mol2
-check MOL
-saveamberparm MOL molecule.prmtop molecule.rst7
-savepdb MOL molecule.pdb
-quit

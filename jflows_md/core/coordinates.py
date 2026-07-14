@@ -22,11 +22,9 @@ class Internal_Coordinates(eqx.Module):
 
     Bonds use offset/scaled log coordinates, angles use offset/scaled logits
     of ``angle/pi``, and ordinary torsions remain periodic. An optional chiral
-    torsion is replaced by ``tau = sign*pi*sigmoid(eta)``. Current schema-2
-    bundles use the standard Cartesian configurational measure after
-    quotienting rigid translations and rotations. Explicit schema-1 bundles
-    remain readable with their historical canonical gauge-slice
-    measure.
+    torsion is replaced by ``tau = sign*pi*sigmoid(eta)``. Coordinate specs
+    use the standard Cartesian configurational measure after quotienting
+    rigid translations and rotations.
     """
 
     order: tuple[int, ...] = eqx.field(static=True)
@@ -63,28 +61,11 @@ class Internal_Coordinates(eqx.Module):
         self.n_bonds = self.n_atoms - 1
         self.n_angles = self.n_atoms - 2
         self.n_torsions = self.n_atoms - 3
-        schema_version = int(spec.get("schema_version", 1))
-        if schema_version == 1:
-            self.jacobian_measure = str(
-                spec.get("jacobian_measure", "canonical_gauge_slice_v1")
-            )
-        elif schema_version == 2:
-            if "jacobian_measure" not in spec:
-                raise ValueError("CoordinateSpec schema 2 requires jacobian_measure")
-            self.jacobian_measure = str(spec["jacobian_measure"])
-            if self.jacobian_measure != "rigid_motion_quotient_v1":
-                raise ValueError(
-                    "CoordinateSpec schema 2 requires rigid_motion_quotient_v1"
-                )
-        else:
-            raise ValueError(f"unsupported CoordinateSpec schema: {schema_version}")
-        if self.jacobian_measure not in (
-            "canonical_gauge_slice_v1",
-            "rigid_motion_quotient_v1",
-        ):
-            raise ValueError(
-                f"unsupported molecular Jacobian measure: {self.jacobian_measure!r}"
-            )
+        if spec.get("schema_version") != 2:
+            raise ValueError("CoordinateSpec schema must be 2")
+        self.jacobian_measure = str(spec.get("jacobian_measure"))
+        if self.jacobian_measure != "rigid_motion_quotient_v1":
+            raise ValueError("CoordinateSpec requires rigid_motion_quotient_v1")
         self.chiral_torsion_index = int(spec.get("chiral_torsion_index", -1))
         self.chiral_torsion_sign = int(spec.get("chiral_torsion_sign", 0))
         self.chirality_atoms = tuple(map(int, spec.get("chirality_atoms", (-1, -1, -1, -1))))
@@ -196,21 +177,10 @@ class Internal_Coordinates(eqx.Module):
         # sin(pi) < 0 and hence NaNs at the open chart boundary.
         boundary_angle = jnp.pi * jax.nn.sigmoid(-jnp.abs(angle_logit))
         log_sin = jnp.log(jnp.sin(boundary_angle))
-        if self.jacobian_measure == "rigid_motion_quotient_v1":
-            # Standard Z-matrix volume element after factoring the six rigid
-            # degrees of freedom: prod_i r_i^2 prod_j sin(theta_j).
-            bat = jnp.sum(2.0 * jnp.log(bonds), axis=-1)
-            bat = bat + jnp.sum(log_sin, axis=-1)
-        else:
-            # Schema-1 measure induced on the canonical gauge slice.
-            # It remains readable for explicit old bundles but is not used by
-            # the current physical-target bundles.
-            bat = jnp.log(bonds[:, 1])
-            bat = bat + jnp.sum(
-                2.0 * jnp.log(bonds[:, 2:])
-                + log_sin[:, 1:],
-                axis=-1,
-            )
+        # Standard Z-matrix volume element after factoring the six rigid
+        # degrees of freedom: prod_i r_i^2 prod_j sin(theta_j).
+        bat = jnp.sum(2.0 * jnp.log(bonds), axis=-1)
+        bat = bat + jnp.sum(log_sin, axis=-1)
         chart = jnp.sum(jnp.log(self.bond_scale) + jnp.log(bonds), axis=-1)
         chart = chart + jnp.sum(
             jnp.log(self.angle_scale)

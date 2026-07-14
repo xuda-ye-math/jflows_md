@@ -2,16 +2,6 @@
   "canonical_smiles": "CC(=O)N[C@@H](C)C(=O)NC",
   "coordinate_measure": "rigid_motion_quotient_v1",
   "coordinate_spec": "coordinates.json",
-  "files": {
-    "coordinates.json": "57972d50b9813f6526f9fbd45b319b5f9e6365cc315a25190e762b362fcbe268",
-    "provenance/coordinate_measure_upgrade.json": "f35194d46b894dd2f4fb1598552ca7f5d961ee2d3f439c884fc99d8dfaf50210",
-    "reference.pdb": "d8272d84af4a3569189dba7f7a126c24ecccf9556ce22c1441ffd48432945e88",
-    "system.json": "a67f66315ad149ba3385b2d02ef2c57b4a0ab4d45581434bf05e148e7fce072f",
-    "system.prmtop": "2ce81216c7e18fd4d354fac44e22ba3843d89e297884bd6389a4cd57c74ecf6e",
-    "system.rst7": "b8a151fd35b909de52b7f50b09f4a0c9fc5221d0b423c6a9ec3133bf867c4954",
-    "system.xml": "e0282937561813c3a3b4e2a1cfcabf1d0eac7e500cfcb0564c81fa9821b17823",
-    "validation.json": "4a2766565458cd0804e248d8caf31e1f8e4b80a8a4fa7f803096a2c1a9f65c9c"
-  },
   "formal_charge": 0,
   "formula": "C6H12N2O2",
   "model": {
@@ -19,7 +9,6 @@
     "force_field": "Amber ff96",
     "implicit_solvent": "OBC1 (igb=2)",
     "nonbonded_method": "NoCutoff",
-    "openmmtools_commit": "e7e5847a677a9ecc83fcb284d0f120960416353f",
     "radii": "mbondi2",
     "salt_molar": 0.0,
     "sasa": "ACE",

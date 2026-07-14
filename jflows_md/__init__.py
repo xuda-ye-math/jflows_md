@@ -21,7 +21,6 @@ __all__ = [
     "boltzmann_forward_KLX_G",
     "boltzmann_forward_KLXX_G",
     "load_mixed_flow",
-    "load_mixed_flow_stages",
     "mixed_flow_metadata",
     "mixed_mala",
     "mixed_quench_and_temper",
@@ -30,7 +29,6 @@ __all__ = [
     "train_forward_KLX_G",
     "train_forward_KLXX_G",
     "save_mixed_flow",
-    "package_source_sha256",
 ]
 
 
@@ -48,7 +46,6 @@ _EXPORTS = {
     "boltzmann_forward_KLX_G": (".boltzmann", "boltzmann_forward_KLX_G"),
     "boltzmann_forward_KLXX_G": (".boltzmann", "boltzmann_forward_KLXX_G"),
     "load_mixed_flow": (".artifacts", "load_mixed_flow"),
-    "load_mixed_flow_stages": (".artifacts", "load_mixed_flow_stages"),
     "mixed_flow_metadata": (".artifacts", "mixed_flow_metadata"),
     "mixed_mala": (".utils", "mixed_mala"),
     "mixed_quench_and_temper": (".utils", "mixed_quench_and_temper"),
@@ -57,7 +54,6 @@ _EXPORTS = {
     "train_forward_KLX_G": (".train", "train_forward_KLX_G"),
     "train_forward_KLXX_G": (".train", "train_forward_KLXX_G"),
     "save_mixed_flow": (".artifacts", "save_mixed_flow"),
-    "package_source_sha256": (".artifacts", "package_source_sha256"),
 }
 
 

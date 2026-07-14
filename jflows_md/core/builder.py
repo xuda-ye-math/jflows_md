@@ -1,7 +1,6 @@
-"""OpenMM-side construction of immutable molecular bundles.
+"""OpenMM-side construction of minimal molecular runtime bundles.
 
-This module is intentionally JAX-free. Rebuilding immutable benchmark targets
-is an optional provenance workflow; ordinary runtime and training load the
+This module is intentionally JAX-free. Ordinary runtime and training load the
 checked-in pure-array bundles directly.
 """
 
@@ -9,7 +8,6 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Mapping, Sequence
-import hashlib
 import json
 import math
 from pathlib import Path
@@ -18,17 +16,11 @@ from typing import Any
 
 import numpy as np
 
-from ..system import sha256_file
 from .zmatrix import build_zmatrix, validate_zmatrix
 
 
 KB_KJ_MOL_K = 0.00831446261815324
 ACE_COEFFICIENT = 28.3919551
-
-
-def normalize_amber_transcript(text: str, prefix: Path) -> str:
-    """Remove installation paths and canonicalize trailing whitespace."""
-    return text.replace(str(prefix), "<AMBERHOME>").rstrip() + "\n"
 
 
 def _json_write(path: Path, value: Any) -> None:
@@ -411,7 +403,6 @@ def write_bundle(
     expected_formula: str,
     expected_charge: int,
     minimize: bool,
-    provenance_files: Mapping[str, str | Path] | None = None,
 ) -> Path:
     import openmm as mm
     from openmm import app, unit
@@ -422,8 +413,6 @@ def write_bundle(
         shutil.rmtree(output)
     output.mkdir(parents=True)
     prmtop_source, coordinate_source = Path(prmtop_path), Path(coordinate_path)
-    shutil.copy2(prmtop_source, output / "system.prmtop")
-    shutil.copy2(coordinate_source, output / "system.rst7")
     structure = pmd.load_file(str(prmtop_source), xyz=str(coordinate_source))
     topology_file, system = build_obc1_system(prmtop_source)
     inpcrd = app.AmberInpcrdFile(str(coordinate_source))
@@ -465,17 +454,6 @@ def write_bundle(
     _json_write(output / "coordinates.json", coordinate_spec)
     _json_write(output / "validation.json", validation_spec)
 
-    if provenance_files:
-        provenance = output / "provenance"
-        provenance.mkdir()
-        for relative, source in provenance_files.items():
-            destination = provenance / relative
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, destination)
-
-    files = {}
-    for path in sorted(p for p in output.rglob("*") if p.is_file()):
-        files[str(path.relative_to(output))] = sha256_file(path)
     manifest = {
         "schema_version": 1,
         "name": name,
@@ -490,7 +468,6 @@ def write_bundle(
         "system_spec": "system.json",
         "coordinate_spec": "coordinates.json",
         "validation_spec": "validation.json",
-        "files": files,
     }
     _json_write(output / "manifest.json", manifest)
     return output

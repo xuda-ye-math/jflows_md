@@ -1,7 +1,0 @@
-{
-  "change": "canonical gauge-slice measure to rigid-motion quotient",
-  "coordinate_schema_version": 2,
-  "jacobian_measure": "rigid_motion_quotient_v1",
-  "source_bundle": "fab_adp_ff96_obc1_v1",
-  "source_manifest_sha256": "26f71aa4fb696e3f9641db1e32253ca3093063fb2efa48d46fefe0eb3e636744"
-}

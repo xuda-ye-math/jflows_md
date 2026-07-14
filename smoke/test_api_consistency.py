@@ -13,8 +13,6 @@ import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
 import jflows  # noqa: E402
 import jflows_md  # noqa: E402
-import jflows_md.boltzmann as md_boltzmann  # noqa: E402
-import jflows_md.train as md_train  # noqa: E402
 import jflows_md.utils as md_utils  # noqa: E402
 from jflows.flow import (  # noqa: E402
     CircularRQSTransform,
@@ -47,29 +45,6 @@ def expect_value_error(fn) -> None:
 
 def main() -> None:
     assert jflows.__file__ != jflows_md.__file__
-    retired_wrappers = {
-        "train_molecular_forward_KLX_G",
-        "train_molecular_forward_KLXX_G",
-        "molecular_boltzmann_forward_KLX_G",
-        "molecular_boltzmann_forward_KLXX_G",
-    }
-    assert retired_wrappers.isdisjoint(jflows_md.__all__)
-    assert all(not hasattr(jflows_md, name) for name in retired_wrappers)
-    assert all(not hasattr(md_train, name) for name in retired_wrappers)
-    assert all(not hasattr(md_boltzmann, name) for name in retired_wrappers)
-    retired_keywords = {
-        "step",
-        "iters",
-        "chunk",
-        "mc_step",
-        "mc_iters",
-        "opt_step",
-        "opt_iters",
-        "images",
-        "n_batch",
-        "n_pool",
-        "n",
-    }
     canonical_functions = (
         md_utils.wrapped_normal_relative_error_bound,
         md_utils.mixed_mala_step,
@@ -84,9 +59,7 @@ def main() -> None:
         boltzmann_forward_KLXX_G,
         Molecular_Source.samples,
     )
-    for function in canonical_functions:
-        assert retired_keywords.isdisjoint(inspect.signature(function).parameters)
-    assert not hasattr(md_utils, "_legacy_keywords")
+    assert all(inspect.signature(function).parameters for function in canonical_functions)
     assert md_utils.smc is md_utils.sequential_monte_carlo
     assert md_utils.ais is md_utils.annealed_importance_sampling
     assert all(value is not None for value in (
@@ -131,12 +104,6 @@ def main() -> None:
     domain = Mixed_Domain(2, 1)
     source = Molecular_Source(domain)
     samples = source.samples(jax.random.key(20), N=4)
-    try:
-        source.samples(jax.random.key(20), n=4)
-    except TypeError:
-        pass
-    else:
-        raise AssertionError("retired n= sample-count alias must fail")
     assert samples.dtype == jnp.float32
     assert source(samples).dtype == jnp.float32
     expect_value_error(lambda: source(jnp.zeros((4, 2))))

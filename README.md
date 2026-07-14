@@ -4,38 +4,32 @@ Mixed-domain molecular potentials, normalizing flows, samplers, and Boltzmann
 generators for [`jflows`](https://github.com/xuda-ye-math/jflows), built with
 JAX and Equinox.
 
-> **Status: experimental.** The package currently targets Linux and
-> accelerator-backed JAX. Molecular targets are validated against OpenMM
-> reference energies and forces, but production-scale training remains a
-> separate experiment milestone.
+> **Status: experimental.** Molecular energies and forces are checked against
+> OpenMM, while production-scale Boltzmann-generator training remains an
+> experiment-level responsibility.
 
 ## Features
 
 - **Mixed molecular domains.** `Mixed_NSF` acts on
   $\mathbb{R}^{p}\times\mathbb{T}^{q}$: ordinary rational-quadratic splines
-  transform whitened bond/angle coordinates, while circular C1 splines
-  transform torsions.
-- **Frozen physical targets.** `Molecular_Potential` loads a verified bundle
-  that fixes the force field, OBC1 implicit solvent, internal-coordinate chart,
-  chirality support, validation frames, provenance, and integrity hashes.
-- **Three repository benchmarks.** The source checkout carries outer runtime
-  bundles for FAB-compatible alanine dipeptide (60D), glycerol (36D), and
-  neutral diethanolamine (48D).
+  transform whitened bond/angle coordinates and circular C1 splines transform
+  torsions.
+- **Bundle-defined targets.** `Molecular_Potential` loads the force field,
+  OBC1 implicit solvent, internal-coordinate chart, chirality support, and
+  OpenMM validation frames from one six-file runtime bundle.
+- **Three supplied targets.** The source checkout carries alanine dipeptide
+  with the FAB force model (60D), glycerol (36D), and diethanolamine (48D).
 - **Molecular sampling.** Mixed-domain MALA, potential-space SMC, and the
   G-native score-free AIS surrogate use explicit `ladder`, `mc_dt`,
   `mc_steps`, and `chunks` controls.
-- **Boltzmann-generator training.** Molecular KL+X and KL+X+X
-  trainers share the adaptive controller, optimizer-only `e_clip`, global
-  `g_clip`, standard per-step batch ESS, honest proposal-side stage ESS,
-  final-versus-identity flow selection, and MALA. Masked losses use finite-safe
-  selection, gradient clipping remains stable when a float32 sum of squares
-  overflows, and an Adam update is committed atomically only when its loss,
-  gradients, moments, and resulting parameters are finite. KL+X+X adds a
-  mixed-domain quench-and-temper coverage pool. No sharpening is part of the
-  target.
-- **Public compatibility boundary.** `jflows_md` imports only public `jflows`
-  interfaces. Low-level coordinate, force-field, chirality, and spline code
-  stays under `jflows_md.core`.
+- **Boltzmann-generator training.** Molecular KL+X and KL+X+X trainers use the
+  adaptive controller, optimizer-only `e_clip`, global `g_clip`, per-step
+  batch ESS, full-validation proposal ESS, final-versus-identity selection,
+  and MALA. KL+X+X additionally constructs a mixed-domain quench-and-temper
+  coverage pool.
+- **Small public surface.** Frequently used objects live directly under
+  `jflows_md`; coordinate, force-field, chirality, and spline implementation
+  details live under `jflows_md.core`.
 
 ## Quick example
 
@@ -44,13 +38,12 @@ import jax
 
 from jflows_md import Mixed_NSF, Molecular_Potential
 
-# Name lookup uses the outer bundles/ directory in a source checkout.
 target = Molecular_Potential.from_bundle("adp_ff96_obc1")
 source = target.source()
-q = source.samples(jax.random.key(0), 32)
+q = source.samples(jax.random.key(0), N=32)
 
-energy = target(q)          # shape [32]
-gradient = target.grad(q)   # shape [32, 60]
+energy = target(q)          # [32]
+gradient = target.grad(q)   # [32, 60]
 
 flow = Mixed_NSF(
     jax.random.key(1),
@@ -61,20 +54,19 @@ flow = Mixed_NSF(
 ).zeros()
 ```
 
-The pulled-back reduced potential is
+The reduced potential is
 
 ```text
 U(q) = beta E_bundle(x(q)) - log J_config(q).
 ```
 
-It contains the complete Amber/OBC energy and the Cartesian-to-internal
-Jacobian for the standard configurational measure after quotienting global
-translation and rotation. The canonical Cartesian frame is only a
-representative; it is not a six-constraint gauge-slice ensemble. The target
-contains neither a sharpened surrogate nor clipped evaluation energies.
+It contains the full Amber/OBC energy and the Cartesian-to-internal Jacobian
+for the configurational measure after quotienting global translation and
+rotation. The canonical Cartesian frame is a representative, not a
+six-constraint ensemble.
 
-For an explicit diagnostic or training bridge, construct a separate soft
-surrogate without mutating the physical target:
+An explicit soft bridge can be constructed without mutating the physical
+target:
 
 ```python
 soft = target.regularized(
@@ -84,12 +76,10 @@ soft = target.regularized(
 )
 ```
 
-The cutoff is the Cartesian energy excess above the bundle reference, in
-kJ/mol. The lin-log scale controls compression above that cutoff and
-`tail_fraction` retains a coercive linear fraction in `[0, 1]`. The coordinate
-Jacobian is never regularized. Such a surrogate must be identified explicitly
-and any physical benchmark must ultimately sharpen back to `target` and report
-weights under the unchanged physical potential.
+The cutoff is the Cartesian energy excess above the bundle reference in
+kJ/mol. The lin-log scale controls compression above the cutoff and
+`tail_fraction` retains a coercive linear component. The coordinate Jacobian
+is never regularized.
 
 ## Package layout
 
@@ -116,20 +106,32 @@ jflows_md/
 └── smoke/
 ```
 
-The outer `bundles/` directory is intentional. Molecular data is not hidden
-inside the import package. Editable source-checkout installs can use the short
-registry names shown above. Built wheels intentionally contain Python code
-only; wheel users must obtain a bundle directory separately and pass its path,
-for example
-`Molecular_Potential.from_bundle("/data/molecules/adp_ff96_obc1")`.
-The checked-in source-tree bundles are sufficient for runtime evaluation;
-OpenMM, ParmEd, and AmberTools are required only to rebuild or independently
-validate them.
+Molecular data deliberately lives outside the import package. A source
+checkout can resolve the supplied bundles by name. A wheel contains Python
+code only, so wheel users pass an external bundle directory, for example:
 
-## Fresh environment for GitHub readers
+```python
+target = Molecular_Potential.from_bundle("/data/molecules/adp_ff96_obc1")
+```
 
-Use a fresh pip-only virtual environment and let pip select the latest
-compatible releases. On Linux with an NVIDIA CUDA 13 driver:
+Each bundle contains exactly:
+
+```text
+coordinates.json
+manifest.json
+reference.pdb
+system.json
+system.xml
+validation.json
+```
+
+Only the four JSON files are needed by the JAX potential. `reference.pdb` and
+`system.xml` make independent OpenMM checks straightforward.
+
+## Installation
+
+Create a fresh virtual environment and let pip select current releases. On
+Linux with an NVIDIA CUDA 13 driver:
 
 ```bash
 python3 -m venv .venv
@@ -140,51 +142,32 @@ pip install --upgrade \
   scipy matplotlib h5py scikit-learn
 ```
 
-The versioned extras are intentional: `jax[cuda13]` installs JAX's CUDA-13
-plugin stack, while `openmm[cuda13]` installs the OpenMM Python API together
-with its matching CUDA platform. Use the corresponding CUDA 12 extras when
-needed. The [JAX installation guide](https://docs.jax.dev/en/latest/installation.html)
-and [OpenMM installation guide](https://docs.openmm.org/development/userguide/application/01_getting_started.html)
-document these pip interfaces.
-
-Clone both source trees into a common workspace:
+Clone both source trees and install them for ordinary imports:
 
 ```bash
 mkdir -p "$HOME/src"
 git clone https://github.com/xuda-ye-math/jflows.git "$HOME/src/jflows"
 git clone https://github.com/xuda-ye-math/jflows_md.git "$HOME/src/jflows_md"
-```
-
-For readers who prefer conventional editable package imports, the public
-GitHub setup may be completed with:
-
-```bash
 pip install -e "$HOME/src/jflows"
 pip install -e "$HOME/src/jflows_md"
 ```
 
-The runtime package does not require AmberTools. Readers working from a source
-checkout who want to construct new molecular bundles directly can instead
-request the optional bundle toolchain:
+The runtime package does not require AmberTools. To construct bundles from
+Amber topology inputs in the same environment, install the optional tools:
 
 ```bash
 pip install -e "$HOME/src/jflows_md[bundles]"
 ```
 
-The `bundles` extra adds OpenMM, ParmEd, and
-`ambertools-unofficial`. The AmberTools wheel is an unofficial repackaging;
-every generated bundle must therefore record its exact version, data hashes,
-and resulting manifest.
+This extra includes `ambertools-unofficial`, an unofficial wheel distribution
+of AmberTools. It is useful for preparing topology inputs but is not required
+for evaluation or training.
 
-Verify the accelerator libraries, dependency closure, and editable checkouts:
+Verify the accelerator stack interactively:
 
 ```bash
-python -m openmm.testInstallation
-pip check
 python
 ```
-
-Then enter:
 
 ```python
 >>> from pathlib import Path
@@ -196,15 +179,7 @@ Then enter:
 >>> print(Path(jflows_md.__file__).resolve())
 ```
 
-Molecular programs then use ordinary Python imports:
-
-```bash
-python molecular_driver.py
-```
-
 ## Public API
-
-The public modules mirror the organization of `jflows`:
 
 - `jflows_md.flow`: `Mixed_Identity`, `Mixed_NSF`
 - `jflows_md.potential`: `Molecular_Potential`
@@ -213,144 +188,86 @@ The public modules mirror the organization of `jflows`:
 - `jflows_md.train`: `train_forward_KLX_G`, `train_forward_KLXX_G`
 - `jflows_md.boltzmann`: `boltzmann_forward_KLX_G`,
   `boltzmann_forward_KLXX_G`
-- `jflows_md.artifacts`: exact flow-architecture metadata, source hashing, and
-  verified stage loading
+- `jflows_md.artifacts`: `mixed_flow_metadata`, `save_mixed_flow`,
+  `load_mixed_flow`
 - `jflows_md.utils`: mixed MALA, mixed quench-and-temper, potential-space SMC,
   and G-native AIS
 
-Frequently used objects are lazily exposed directly from `jflows_md`. User
-programs should not depend on `jflows_md.core`.
+`jflows_md` uses public `jflows` potential/flow bases, spline transforms,
+monitoring, importance weights, ESS, resampling, potential algebra, and
+L-BFGS. Molecular mixed-domain kernels remain in this companion package.
 
-Training drivers use `jflows.train.Monitor`, which reports only loss and the
-standard per-step batch ESS. Stage acceptance separately reports proposal ESS
-on the full validation set.
-
-The companion directly reuses the public `jflows` potential/flow bases, spline
-transforms, monitor, importance weights, log-to-linear weight conversion, ESS,
-resampling, potential algebra, and L-BFGS implementation. Mixed-domain MALA,
-SMC/AIS, molecular sources, and rematerialized stage training stay here
-because their Euclidean/torus and persistence contracts differ from the
-single-domain routines in `jflows`.
-
-Training and Boltzmann drivers use `batch_size`, `pool_size`,
-`train_steps`, `mc_dt`, `mc_steps`, `opt_alpha`, `opt_steps`, and `chunks`;
-direct MALA uses `dt`, `steps`, and `image_radius`, while composite drivers
-use `mc_dt`, `mc_steps`, and `mc_image_radius`. The bridge-level count remains
-`ladder`.
+Training and Boltzmann drivers use `batch_size`, `pool_size`, `train_steps`,
+`mc_dt`, `mc_steps`, `opt_alpha`, `opt_steps`, and `chunks`. Direct MALA uses
+`dt`, `steps`, and `image_radius`. Increasing `chunks` means more sequential
+row partitions and fewer physical samples in each compiled call. `ladder` is
+the number of bridge levels.
 
 The mixed flow follows `jflows` direction conventions. `F` maps source to
-target and `G = F^{-1}` maps target to source. Molecular forward training fixes
-the flow as `G`, so its public driver and AIS surrogate do not accept a
-direction string. Increasing `chunks` means more sequential row partitions and
-therefore fewer physical samples in each compiled molecular call.
+target and `G = F^{-1}` maps target to source. Molecular forward training is
+G-native and therefore does not take a direction string.
 
-The full-validation stage gate compares exactly two maps: the final trained
-flow and exact identity. The higher proposal ESS is the sole post-training
-stage candidate, and it is accepted only if that ESS clears `tau_ess`. The
-Boolean `checkpoint` argument means JAX backward-pass rematerialization; it
-does not save or select intermediate flow snapshots.
+The adaptive full-validation gate compares the trained flow with exact
+identity. The higher ESS is the sole candidate and is accepted exactly when it
+clears `tau_ess`. The `checkpoint` argument controls backward-pass
+rematerialization; persistent flow artifacts are enabled separately with
+`flow_dir`.
 
-Each accepted stage reports `valid_selected_ess`, `valid_trained_ess`,
-`valid_identity_ess`, and `valid_sample_count`. Attempt-aligned diagnostics
-are stored in `t_hist`, `batch_ess_hist`, `valid_trained_ess_hist`,
-`valid_identity_ess_hist`, and `attempt_status_hist`; molecular optimizer
-screens use `kept_fraction_hist` and `update_applied_hist`. Passing `flow_dir`
-saves every trained attempt, including rejected and identity-losing attempts,
-plus the selected stage flow. `attempts.json` makes terminal failed stages
-discoverable, and `jflows_md.artifacts.load_mixed_flow` reloads an individual
-mixed-flow artifact without a caller-supplied template. Stored paths are
-relative to `flow_dir`, so load one with
-`load_mixed_flow(Path(flow_dir) / stage["selected_flow_path"])`; moving the
-complete directory preserves the manifest. Per-attempt `monitor.npz` files
-store the batch ESS, kept fraction, and update-applied histories.
+Each accepted level reports `valid_selected_ess`, `valid_trained_ess`,
+`valid_identity_ess`, and `valid_sample_count`. Attempt diagnostics use
+`t_hist`, `batch_ess_hist`, `valid_trained_ess_hist`,
+`valid_identity_ess_hist`, and `attempt_status_hist`. Molecular optimizer
+screens additionally expose `kept_fraction_hist` and
+`update_applied_hist`. Passing `flow_dir` saves each trained attempt and the
+selected level flow. `load_mixed_flow` reloads any one of those flow files.
 
-Potential-space SMC is classical: every ladder level rejuvenates at its
-matching intermediate potential. Flow-proposal AIS instead applies fractional
-geometric weights while rejuvenating at the final target at every level. It is
-a deliberately biased, score-free target surrogate rather than exact AIS/SMC.
-Its first proposal correction is computed directly from the original source
-particle, inverse-flow image, and matching Jacobian; later levels refresh the
-latent after resampling and MALA, matching `jflows` 0.2 semantics.
+Potential-space SMC rejuvenates at the matching intermediate potential on
+every level. Flow-proposal AIS applies fractional geometric weights while
+rejuvenating at the final target at every level; it is the deliberate
+score-free surrogate used by `jflows`.
 
-Version 0.2.0 is the synchronization boundary with `jflows>=0.2.0`. It removes
-the experimental snapshot/selection API, adopts direct-first AIS proposal
-weights, and relies on the strict continuing Armijo and finite potential
-algebra supplied by that dependency. Artifacts should record both repository
-commits because earlier 0.1.x training histories and controller metadata are
-not interchangeable with this release.
-
-Version 0.2.1 removes the transition call aliases from 0.2.0 and requires the
-canonical `jflows>=0.2.1` interfaces. Numerical kernels, random streams,
-empty-interaction handling, and well-formed force-field arithmetic are
-unchanged from 0.2.0.
-
-## Frozen molecular targets
-
-The built-in registry contains only quotient-measure coordinate-schema-2
-targets. The earlier schema-1 names used a canonical gauge-slice measure and
-are retired rather than silently reinterpreted. The coordinate reader can
-still open an explicit v1 bundle for forensic reproducibility. Likewise,
-schema-1 flow artifacts require an explicit target from their original
-bundle/source revision; automatic built-in target discovery is a schema-2
-contract.
+## Supplied molecular targets
 
 | Bundle | Physical model | Mixed coordinate domain |
 |---|---|---|
-| `adp_ff96_obc1` | FAB-compatible Amber ff96/OBC1, L-ADP only | R^42 x T^18 (60D) |
-| `glycerol_gaff2_am1bcc_obc1` | GAFF2/AM1-BCC/OBC1, neutral | R^25 x T^11 (36D) |
-| `diethanolamine_gaff2_am1bcc_obc1` | GAFF2/AM1-BCC/OBC1, explicitly neutral | R^33 x T^15 (48D) |
+| `adp_ff96_obc1` | Amber ff96/OBC1, L-ADP | R^42 x T^18 (60D) |
+| `glycerol_gaff2_am1bcc_obc1` | GAFF2/AM1-BCC/OBC1 | R^25 x T^11 (36D) |
+| `diethanolamine_gaff2_am1bcc_obc1` | GAFF2/AM1-BCC/OBC1, neutral | R^33 x T^15 (48D) |
 
-Every target uses 300 K, mbondi2 radii, ACE nonpolar solvation, solvent and
-solute dielectric constants 78.5 and 1.0, zero salt, `NoCutoff`, and no
-constraints. A PDB is included for inspection but does not define a complete
-Hamiltonian. ADP uses a chiral half-chart to exclude its unwanted enantiomer;
-glycerol and neutral diethanolamine retain both signs of their diagnostic
-determinant because those signs are not fixed stereocentres.
+All supplied targets use 300 K, mbondi2 radii, ACE nonpolar solvation,
+solvent and solute dielectric constants 78.5 and 1.0, zero salt, `NoCutoff`,
+and no constraints. A PDB alone does not define the Hamiltonian. ADP uses a
+chiral half-chart to select L-ADP; glycerol and diethanolamine retain both
+signs of their diagnostic determinant.
 
-## Validation and maintenance
+## Build a bundle
 
-Run the accelerator-backed smoke suite from the repository root with both live
-source trees visible:
+Given an Amber topology and matching coordinate file:
+
+```bash
+python bundles/build_molecular_bundles.py \
+  glycerol molecule.prmtop molecule.rst7 generated/glycerol
+```
+
+The target argument is one of `adp`, `glycerol`, or `diethanolamine`. Add
+`--name NAME` to set the bundle name. The builder writes the six-file format
+shown above. OpenMM and ParmEd are required; AmberTools is needed only when
+the input topology must first be prepared.
+
+## Validation
+
+Run the accelerator-backed smoke suite from the repository root with both
+source trees importable:
 
 ```bash
 XLA_PYTHON_CLIENT_PREALLOCATE=false python smoke/run_all.py
 ```
 
-The suite covers bundle integrity, OpenMM energy/force parity, mixed-coordinate
-round trips and Jacobians, chirality support, spline seam behavior, float32
-execution, finite-safe optimizer and weight edge cases, pre-compilation
-validation, MALA/SMC/AIS, artifact loading, chunking, and public `jflows`
-compatibility. It does not launch production molecular training. See
-[`smoke/README.md`](smoke/README.md) for the opt-in compilation benchmark.
-
-Construct or verify bundles from the repository root with:
-
-```bash
-pip install -e ".[bundles]"
-python bundles/build_molecular_bundles.py
-```
-
-The no-argument command verifies the frozen historical targets. To construct a
-new small-molecule target with the currently installed AmberTools toolchain,
-give it a new scientific name and an unused output directory:
-
-```bash
-python bundles/build_molecular_bundles.py \
-  --only glycerol \
-  --name glycerol_gaff2_am1bcc_obc1_at26 \
-  --output generated/glycerol_gaff2_am1bcc_obc1_at26
-```
-
-The builder uses immutable seed artifacts already stored in each bundle and
-requires OpenMM and ParmEd. Glycerol and diethanolamine rebuilding additionally
-requires AmberTools; the optional `bundles` extra supplies its command-line
-programs through `ambertools-unofficial`. AmberTools is not a runtime or
-training dependency. The existing small-molecule targets are frozen to their
-historical AmberTools 24.8 outputs, so a current version-26 toolchain must use
-the explicit `--name`/`--output` mode rather than overwrite them. Frozen
-verification creates temporary candidates and accepts only exact matches to
-pinned manifests. Any seed, toolchain, Hamiltonian, or validation change
-requires a new bundle name and an explicit review of its provenance and hashes.
+The suite covers the bundle format, OpenMM energy/force parity,
+mixed-coordinate round trips and Jacobians, chirality support, spline seams,
+float32 execution, finite-safe optimizer and weight cases, MALA/SMC/AIS,
+flow artifact loading, chunking, and the public `jflows` boundary. It does not
+launch production molecular training.
 
 ## License
 

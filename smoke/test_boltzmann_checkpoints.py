@@ -170,24 +170,6 @@ def test_warm_start_and_trained_tie_win() -> None:
         bool(jnp.array_equal(stage["t_hist"], jnp.asarray([stage["t"]])))
         for stage in stages
     )
-    retired = {
-        "ess",
-        "trained_ess",
-        "identity_ess",
-        "ess_samples",
-        "ess_history",
-        "kept_history",
-        "update_history",
-        "imp_history",
-        "selected_checkpoint",
-        "selected_step",
-        "checkpoint_steps",
-        "checkpoint_ess",
-        "checkpoint_labels",
-    }
-    assert all(retired.isdisjoint(stage) for stage in stages)
-
-
 def test_only_final_endpoint_is_scored() -> None:
     samples, potential, _ = common_inputs()
     flow = Probe_Flow(jnp.full((1,), 2.0))

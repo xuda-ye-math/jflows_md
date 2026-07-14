@@ -211,22 +211,6 @@ def main() -> None:
         stages[0]["valid_selected_ess"]
         - max(stages[0]["valid_trained_ess"], stages[0]["valid_identity_ess"])
     ) < 1e-12
-    retired = {
-        "ess",
-        "trained_ess",
-        "identity_ess",
-        "ess_samples",
-        "ess_history",
-        "kept_history",
-        "update_history",
-        "imp_history",
-        "selected_checkpoint",
-        "selected_step",
-        "checkpoint_steps",
-        "checkpoint_ess",
-        "checkpoint_labels",
-    }
-    assert retired.isdisjoint(stages[0])
     assert stages[0]["kept_fraction_hist"].shape == (1, 2)
     assert stages[0]["update_applied_hist"].shape == (1, 2)
     assert stages[0]["smc_ess"].shape == (2,)

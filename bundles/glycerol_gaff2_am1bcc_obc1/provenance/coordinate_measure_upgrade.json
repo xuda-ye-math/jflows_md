@@ -1,7 +1,0 @@
-{
-  "change": "canonical gauge-slice measure to rigid-motion quotient",
-  "coordinate_schema_version": 2,
-  "jacobian_measure": "rigid_motion_quotient_v1",
-  "source_bundle": "glycerol_gaff2_am1bcc_obc1_v1",
-  "source_manifest_sha256": "3a7fb6c95dba2fc20abf71ddde58c5dd5b10bc562dc0ea32f8969470f70afe95"
-}

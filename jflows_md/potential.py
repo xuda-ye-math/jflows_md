@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import math
 from pathlib import Path
 
@@ -31,11 +30,10 @@ class Molecular_Potential(Potential):
 
     ``beta * E_bundle(x(q)) - log J_config(q)``.
 
-    Current schema-2 targets use the standard Cartesian configurational
-    measure with global translation and rotation factored out. The canonical
-    Cartesian frame returned by :meth:`cartesian` is a representative, not a
-    set of six physical holonomic constraints. An explicitly supplied
-    schema-1 bundle retains its historical gauge-slice measure.
+    Targets use the standard Cartesian configurational measure with global
+    translation and rotation factored out. The canonical Cartesian frame
+    returned by :meth:`cartesian` is a representative, not a set of six
+    physical holonomic constraints.
     """
 
     forcefield: Amber_OBC_Force_Field
@@ -45,7 +43,6 @@ class Molecular_Potential(Potential):
     temperature_kelvin: float = eqx.field(static=True)
     bundle_name: str = eqx.field(static=True)
     bundle_path: str = eqx.field(static=True)
-    manifest_sha256: str = eqx.field(static=True)
 
     def __init__(
         self,
@@ -64,9 +61,6 @@ class Molecular_Potential(Potential):
         self.beta = jnp.asarray(1.0 / (KB_KJ_MOL_K * self.temperature_kelvin))
         self.bundle_name = bundle.name
         self.bundle_path = str(bundle.path)
-        self.manifest_sha256 = hashlib.sha256(
-            (bundle.path / "manifest.json").read_bytes()
-        ).hexdigest()
         if self.forcefield.n_atoms != self.coordinates.n_atoms:
             raise ValueError("SystemSpec and CoordinateSpec atom counts differ")
         if self.reference_positions_nm.shape != (self.forcefield.n_atoms, 3):
@@ -255,9 +249,6 @@ class _Regularized_Molecular_Potential(Potential):
         return self.base.bundle_name
 
     @property
-    def manifest_sha256(self) -> str:
-        return self.base.manifest_sha256
-
     def cartesian(self, q: Array) -> Array:
         return self.base.cartesian(q)
 

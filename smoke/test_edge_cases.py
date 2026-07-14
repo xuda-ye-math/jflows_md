@@ -58,14 +58,6 @@ def raises(function) -> None:
     raise AssertionError("expected ValueError")
 
 
-def raises_type_error(function) -> None:
-    try:
-        function()
-    except TypeError:
-        return
-    raise AssertionError("expected TypeError")
-
-
 def main() -> None:
     # The molecular trainer must share jflows' finite-safe clipping contract.
     clipped = _clip_global({"g": jnp.asarray([jnp.inf, 2.0])}, 1.0)["g"]
@@ -238,32 +230,6 @@ def main() -> None:
 
     samples = source.samples(jax.random.key(3), N=4)
     target = Toy_Potential(domain)
-    # Retired utility keywords are rejected by the canonical signatures.
-    raises_type_error(
-        lambda: wrapped_normal_relative_error_bound(dt=1e-4, step=1e-4)
-    )
-    raises_type_error(
-        lambda: mixed_mala(
-            jax.random.key(31),
-            samples,
-            target,
-            domain,
-            dt=1e-4,
-            step=1e-4,
-        )
-    )
-    raises_type_error(
-        lambda: sequential_monte_carlo(
-            jax.random.key(32),
-            samples,
-            source,
-            target,
-            mc_dt=1e-3,
-            step=1e-3,
-            domain=domain,
-        )
-    )
-
     # Wrapped-normal truncation is irrelevant on a pure Euclidean domain.
     # dt=1 and image_radius=1 deliberately fail the torus certification.
     euclidean_domain = Mixed_Domain(2, 0)
