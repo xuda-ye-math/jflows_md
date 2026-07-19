@@ -25,6 +25,7 @@ TESTS = (
     "test_sharpening_gate.py",
     "test_molecular_potential.py",
     "test_regularization.py",
+    "test_openmm.py",
     "test_support_and_utils.py",
     "test_float32_glycerol_compile.py",
 )

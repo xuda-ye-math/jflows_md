@@ -72,6 +72,7 @@ jflows_md/
 ├── bundle_build/             optional OpenMM-side construction
 ├── core/                     BAT, Amber/OBC, domain, and spline kernels
 ├── flow.py                   Mixed_Identity and Mixed_NSF
+├── openmm/                   native OpenMM potential and samplers
 ├── potential.py              physical and regularized potentials
 ├── source.py                 Gaussian x uniform-torus source
 ├── system.py                 minimal runtime-bundle loading
@@ -85,6 +86,32 @@ jflows_md/
 Eager Python controllers split work into chunks; compiled kernels operate on
 fixed array shapes. Filesystem paths, manifests, and resume policy never enter
 the computation functions.
+
+## Native OpenMM
+
+The same bundle can instantiate an independent Cartesian OpenMM potential.
+It evaluates `beta E(x)` without JAX or the internal-coordinate Jacobian, and
+its `(e,r)` regularization matches `Molecular_Potential.regularized`. Native
+Langevin and replica-exchange runs accept either the physical or regularized
+potential.
+
+```python
+from jflows_md.openmm import OpenMM_Potential, langevin, parallel_tempering
+
+target = OpenMM_Potential.from_bundle("adp_ff96_obc1")
+soft = target.regularized((50.0, 0.10))
+
+trajectory, energy = langevin(soft, steps=10000, sample_interval=100)
+replicas, energy, swap_acceptance = parallel_tempering(
+    target,
+    (300.0, 360.0, 432.0, 518.4),
+    rounds=1000,
+    steps_per_round=100,
+)
+```
+
+The samplers use fresh OpenMM systems and contexts; `platform="Reference"`,
+`"CPU"`, `"CUDA"`, or `"OpenCL"` can be selected explicitly.
 
 ## Direct training
 
@@ -268,6 +295,7 @@ pip install -e /path/to/jflows_md
 OpenMM-side construction is optional:
 
 ```bash
+pip install -e "/path/to/jflows_md[openmm]"
 pip install -e "/path/to/jflows_md[bundles]"
 python -m jflows_md.bundle_build \
   glycerol molecule.prmtop molecule.rst7 generated/glycerol

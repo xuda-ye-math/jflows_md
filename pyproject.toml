@@ -39,6 +39,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+openmm = [
+    "openmm>=8.5.0",
+]
 bundles = [
     "openmm>=8.5.0",
     "parmed>=4.3.1",
