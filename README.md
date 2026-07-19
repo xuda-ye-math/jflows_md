@@ -87,6 +87,10 @@ Eager Python controllers split work into chunks; compiled kernels operate on
 fixed array shapes. Filesystem paths, manifests, and resume policy never enter
 the computation functions.
 
+The complete low-/medium-/high-level interface manual is in
+[`doc/`](doc/README.md). Narrow executable contracts are organized under
+[`smoke/`](smoke/).
+
 ## Native OpenMM
 
 The same bundle can instantiate an independent Cartesian OpenMM potential.
