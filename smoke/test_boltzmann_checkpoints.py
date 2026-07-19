@@ -1,715 +1,561 @@
 #!/usr/bin/env python
-"""Focused molecular final-versus-identity controller regressions."""
+"""Complete-stage persistence and post-sharpen resume checks."""
 
-from __future__ import annotations
-
-from contextlib import contextmanager
+import inspect
 import json
-import os
+from functools import partial, wraps
 from pathlib import Path
-import tempfile
-from types import SimpleNamespace
+from tempfile import TemporaryDirectory
 
+import equinox as eqx
+import jax
+import jax.numpy as jnp
+import numpy as np
 
-os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
-
-import equinox as eqx  # noqa: E402
-import jax  # noqa: E402
-import jax.numpy as jnp  # noqa: E402
-
-from jflows.potential import Potential  # noqa: E402
-import jflows_md.boltzmann as bg  # noqa: E402
-from jflows_md.core.domain import Mixed_Domain  # noqa: E402
-
-
-class Probe_Potential(Potential):
-    domain: Mixed_Domain
-
-    def __init__(self, domain: Mixed_Domain):
-        self.domain = domain
-
-    def __call__(self, value):
-        return 0.5 * jnp.sum(value**2, axis=-1)
-
-    def reference_internal(self):
-        return jnp.zeros((1,))
-
-    def samples(self, key, sample_count):
-        del key
-        return (10.0 + jnp.arange(sample_count))[:, None]
+import jflows_md.boltzmann as compute
+import jflows_md.boltzmann.load as store
+import jflows_md.boltzmann.write as write
+from jflows_md.core.domain import Mixed_Domain
+from jflows_md.flow import Mixed_NSF
 
 
 class Probe_Flow(eqx.Module):
     shift: jax.Array
+    tag: int = eqx.field(static=True)
 
-    def zeros(self):
-        return Probe_Flow(jnp.zeros_like(self.shift))
-
-    def inv(self, value):
-        return value + self.shift
-
-    def inv_and_ladj(self, value):
-        return self.inv(value), jnp.zeros(value.shape[0], dtype=value.dtype)
-
-
-@contextmanager
-def patched_driver(
-    *,
-    trainer=None,
-    klxx_trainer=None,
-    identity_weights,
-    importance_weights=None,
-    smc_sampler=None,
-    qt_sampler=None,
-):
-    originals = {
-        "train_forward_KLX_G": bg.train_forward_KLX_G,
-        "train_forward_KLXX_G": bg.train_forward_KLXX_G,
-        "sequential_monte_carlo": bg.sequential_monte_carlo,
-        "mixed_mala": bg.mixed_mala,
-        "mixed_quench_and_temper": bg.mixed_quench_and_temper,
-        "_importance_weights_g": bg._importance_weights_g,
-        "_chunked_identity_weights": bg._chunked_identity_weights,
-        "_chunked_inverse": bg._chunked_inverse,
-    }
-
-    if smc_sampler is None:
-        def smc_sampler(
-            key, samples, source, target, *, ladder, mc_steps, **kwargs
-        ):
-            del key, source, target, kwargs
-            return samples, jnp.ones((ladder,)), jnp.ones((ladder, mc_steps))
-
-    def mala(key, samples, target, domain, *, steps, **kwargs):
-        del key, target, domain, kwargs
-        return samples, jnp.ones((steps,))
-
-    if importance_weights is None:
-        def importance_weights(samples, source, target, flow, chunks):
-            del source, target, flow, chunks
-            return jnp.zeros((samples.shape[0],), dtype=samples.dtype)
-
-    try:
-        if trainer is not None:
-            bg.train_forward_KLX_G = trainer
-        if klxx_trainer is not None:
-            bg.train_forward_KLXX_G = klxx_trainer
-        if qt_sampler is not None:
-            bg.mixed_quench_and_temper = qt_sampler
-        bg.sequential_monte_carlo = smc_sampler
-        bg.mixed_mala = mala
-        bg._importance_weights_g = importance_weights
-        bg._chunked_identity_weights = identity_weights
-        bg._chunked_inverse = lambda flow, samples, chunks: flow.inv(samples)
-        yield
-    finally:
-        for name, value in originals.items():
-            setattr(bg, name, value)
-
-
-def common_inputs():
-    domain = Mixed_Domain(1, 0)
-    potential = Probe_Potential(domain)
-    samples = jnp.linspace(-1.0, 1.0, 8)[:, None]
-    flow = Probe_Flow(jnp.zeros((1,)))
-    return samples, potential, flow
-
-
-def controls(**overrides):
-    values = {
-        "t_safe": 1.0,
-        "tau_smc": 0.0,
-        "tau_ess": 0.0,
-        "max_stages": 1,
-        "max_retry": 1,
-    }
-    values.update(overrides)
-    return values
-
-
-def run_driver(samples, potential, flow, **kwargs):
-    return bg.boltzmann_forward_KLX_G(
-        samples,
-        potential,
-        potential,
-        flow,
-        pool_size=kwargs.pop("pool_size", 4),
-        batch_size=kwargs.pop("batch_size", 2),
-        train_steps=kwargs.pop("train_steps", 1),
-        lr=1e-3,
-        ladder=1,
-        mc_dt=1e-3,
-        mc_steps=1,
-        **kwargs,
-    )
-
-
-def zero_identity_weights(samples, source, target, chunks):
-    del source, target, chunks
-    return jnp.zeros((samples.shape[0],), dtype=samples.dtype)
-
-
-def accepting_trainer(
-    target_pool,
-    source_pool,
-    previous,
-    current,
-    initial,
-    batch_size,
-    train_steps,
-    lr,
-    **kwargs,
-):
-    del target_pool, source_pool, previous, current, batch_size, lr, kwargs
-    return (
-        initial,
-        jnp.ones((train_steps,)),
-        jnp.ones((train_steps,)),
-        jnp.ones((train_steps,), dtype=bool),
-    )
-
-
-def test_full_pool_and_positive_pool_paths() -> None:
-    samples, potential, flow = common_inputs()
-    captured = []
-    lines = []
-
-    def smc_sampler(key, pool, source, target, *, ladder, mc_steps, **kwargs):
-        del key, source, target, kwargs
-        captured.append(pool)
-        return pool, jnp.ones((ladder,)), jnp.ones((ladder, mc_steps))
-
-    with patched_driver(
-        trainer=accepting_trainer,
-        identity_weights=zero_identity_weights,
-        smc_sampler=smc_sampler,
-    ):
-        _, full_stages = run_driver(
-            samples,
-            potential,
-            flow,
-            pool_size=0,
-            monitor=SimpleNamespace(printer=lines.append),
-            bg_param=controls(),
-        )
-
-    assert bool(jnp.array_equal(captured.pop(), samples))
-    assert full_stages[0]["selection_pool_mode"] == "full"
-    assert full_stages[0]["selection_pool_size"] == samples.shape[0]
-    assert any("pool=full N=8" in line for line in lines)
-
-    with patched_driver(
-        trainer=accepting_trainer,
-        identity_weights=zero_identity_weights,
-        smc_sampler=smc_sampler,
-    ):
-        _, indexed_stages = run_driver(
-            samples,
-            potential,
-            flow,
-            pool_size=4,
-            bg_param=controls(),
-        )
-
-    base_key = jax.random.fold_in(jax.random.key(41), 0)
-    selection_base = bg._operation_key(base_key, 1, 1)
-    draw_key = jax.random.fold_in(selection_base, 1)
-    expected_indices = jax.random.randint(
-        draw_key, (4,), 0, samples.shape[0]
-    )
-    assert bool(jnp.array_equal(captured.pop(), samples[expected_indices]))
-    assert indexed_stages[0]["selection_pool_mode"] == "with_replacement"
-    assert indexed_stages[0]["selection_pool_size"] == 4
-
-
-def test_full_pool_klxx_uses_fresh_qt_source_population() -> None:
-    samples, potential, flow = common_inputs()
-    captured = {}
-    lines = []
-
-    def qt_sampler(key, initial, current, domain, **kwargs):
-        del key, current, domain
-        captured["qt_initial"] = initial
-        captured["qt_controls"] = kwargs
-        return initial, jnp.ones((kwargs["mc_steps"],))
-
-    def klxx_trainer(
-        target_pool,
-        source_pool,
-        hat_pool,
-        previous,
-        current,
-        initial,
-        domain,
-        batch_size,
-        train_steps,
-        lr,
-        **kwargs,
-    ):
-        del previous, current, domain, batch_size, lr, kwargs
-        captured["target_pool"] = target_pool
-        captured["source_pool"] = source_pool
-        captured["hat_pool"] = hat_pool
-        return (
-            initial,
-            jnp.ones((train_steps,)),
-            jnp.ones((train_steps,)),
-            jnp.ones((train_steps,), dtype=bool),
-        )
-
-    with patched_driver(
-        klxx_trainer=klxx_trainer,
-        identity_weights=zero_identity_weights,
-        qt_sampler=qt_sampler,
-    ):
-        _, stages = bg.boltzmann_forward_KLXX_G(
-            samples,
-            potential,
-            potential,
-            flow,
-            pool_size=0,
-            batch_size=2,
-            train_steps=1,
-            lr=1e-3,
-            ladder=1,
-            mc_dt=2e-3,
-            mc_steps=1,
-            mc_image_radius=3,
-            melt=0.25,
-            opt_alpha=0.02,
-            opt_steps=3,
-            chunks=2,
-            monitor=SimpleNamespace(printer=lines.append),
-            bg_param=controls(),
-        )
-
-    fresh = potential.samples(jax.random.key(0), samples.shape[0])
-    assert bool(jnp.array_equal(captured["qt_initial"], fresh))
-    assert not bool(jnp.array_equal(captured["qt_initial"], samples))
-    assert bool(jnp.array_equal(captured["source_pool"], samples))
-    assert bool(jnp.array_equal(captured["target_pool"], samples))
-    assert bool(jnp.array_equal(captured["hat_pool"], fresh))
-    assert captured["qt_controls"] == {
-        "melt": 0.25,
-        "opt_alpha": 0.02,
-        "opt_steps": 3,
-        "mc_dt": 2e-3,
-        "mc_steps": 1,
-        "mc_image_radius": 3,
-        "chunks": 2,
-    }
-    assert stages[0]["selection_pool_mode"] == "full"
-    assert stages[0]["selection_pool_size"] == samples.shape[0]
-    assert any("source=fresh, N=8" in line for line in lines)
-
-
-def test_full_pool_input_validation() -> None:
-    samples, potential, flow = common_inputs()
-
-    for overrides in (
-        {"pool_size": -1},
-        {"pool_size": False},
-        {"pool_size": 0, "batch_size": samples.shape[0] + 1},
-        {"pool_size": 0, "chunks": samples.shape[0] + 1},
-        {"initialize_from_identity": 1},
-        {"initialize_from_identity": jnp.asarray(True)},
-    ):
-        try:
-            run_driver(samples, potential, flow, **overrides)
-        except ValueError:
-            pass
-        else:
-            raise AssertionError(f"invalid full-pool controls accepted: {overrides}")
-
-
-def test_default_initialization_resets_each_stage_and_trained_tie_wins() -> None:
-    samples, potential, _ = common_inputs()
-    flow = Probe_Flow(jnp.asarray([5.0]))
-    seen, flags = [], []
-
-    def trainer(pool, source_pool, previous, current, initial, batch_size, train_steps, lr, **kwargs):
-        del pool, source_pool, previous, current, batch_size, lr
-        seen.append(float(initial.shift[0]))
-        initialize = kwargs.pop("initialize_from_identity")
-        flags.append(initialize)
-        template = initial.zeros() if initialize else initial
-        return (
-            Probe_Flow(template.shift + 1.0),
-            jnp.ones((train_steps,)),
-            jnp.ones((train_steps,)),
-            jnp.ones((train_steps,), dtype=bool),
-        )
-
-    with patched_driver(trainer=trainer, identity_weights=zero_identity_weights):
-        _, stages = run_driver(
-            samples,
-            potential,
-            flow,
-            bg_param=controls(
-                t_safe=0.4,
-                enlarge_factor=1.5,
-                max_stages=2,
-            ),
-        )
-
-    assert seen == [5.0, 1.0], seen
-    assert flags == [True, True]
-    assert len(stages) == 2 and stages[-1]["t"] == 1.0
-    assert all(stage["selected"] == "trained" for stage in stages)
-    assert all(stage["initialized_from_identity"] is True for stage in stages)
-    assert all(
-        stage["valid_trained_ess"] == stage["valid_identity_ess"] == 1.0
-        for stage in stages
-    )
-    assert all(stage["attempt_status_hist"] == ("accepted",) for stage in stages)
-    assert all(
-        bool(jnp.array_equal(stage["t_hist"], jnp.asarray([stage["t"]])))
-        for stage in stages
-    )
-
-
-def test_false_warm_starts_later_stage_and_identity_selection_resets_it() -> None:
-    samples, potential, _ = common_inputs()
-    flow = Probe_Flow(jnp.asarray([5.0]))
-    seen = []
-
-    def trainer(pool, source_pool, previous, current, initial, batch_size, train_steps, lr, **kwargs):
-        del pool, source_pool, previous, current, batch_size, lr
-        assert kwargs.pop("initialize_from_identity") is False
-        seen.append(float(initial.shift[0]))
-        return (
-            Probe_Flow(initial.shift + 1.0),
-            jnp.ones((train_steps,)),
-            jnp.ones((train_steps,)),
-            jnp.ones((train_steps,), dtype=bool),
-        )
-
-    with patched_driver(trainer=trainer, identity_weights=zero_identity_weights):
-        _, trained_stages = run_driver(
-            samples,
-            potential,
-            flow,
-            initialize_from_identity=False,
-            bg_param=controls(t_safe=0.4, enlarge_factor=1.5, max_stages=2),
-        )
-    assert seen == [5.0, 6.0]
-    assert all(stage["selected"] == "trained" for stage in trained_stages)
-    assert all(
-        stage["initialized_from_identity"] is False for stage in trained_stages
-    )
-
-    seen.clear()
-
-    def poor_weights(samples, source, target, candidate, chunks):
-        del source, target, candidate, chunks
-        values = jnp.full((samples.shape[0],), -10.0, dtype=samples.dtype)
-        return values.at[0].set(0.0)
-
-    with patched_driver(
-        trainer=trainer,
-        identity_weights=zero_identity_weights,
-        importance_weights=poor_weights,
-    ):
-        _, identity_stages = run_driver(
-            samples,
-            potential,
-            flow,
-            initialize_from_identity=False,
-            bg_param=controls(t_safe=0.4, enlarge_factor=1.5, max_stages=2),
-        )
-    assert seen == [5.0, 0.0]
-    assert all(stage["selected"] == "identity" for stage in identity_stages)
-
-
-def test_only_final_endpoint_is_scored() -> None:
-    samples, potential, _ = common_inputs()
-    flow = Probe_Flow(jnp.full((1,), 2.0))
-    scored = []
-
-    def trainer(pool, source_pool, previous, current, initial, batch_size, train_steps, lr, **kwargs):
-        del pool, source_pool, previous, current, initial, batch_size, lr, kwargs
-        return (
-            Probe_Flow(jnp.full((1,), 3.0)),
-            jnp.ones((train_steps,)),
-            jnp.ones((train_steps,)),
-            jnp.ones((train_steps,), dtype=bool),
-        )
-
-    def importance_weights(samples, source, target, candidate, chunks):
-        del source, target, chunks
-        scored.append(float(candidate.shift[0]))
-        return jnp.zeros((samples.shape[0],), dtype=samples.dtype)
-
-    with patched_driver(
-        trainer=trainer,
-        identity_weights=zero_identity_weights,
-        importance_weights=importance_weights,
-    ):
-        _, stages = run_driver(
-            samples, potential, flow, train_steps=2, bg_param=controls()
-        )
-
-    assert scored == [3.0], scored
-    assert stages[0]["selected"] == "trained"
-    assert float(stages[0]["flow"].shift[0]) == 3.0
-
-
-def test_zero_updates_reaches_final_ess_gate() -> None:
-    samples, potential, flow = common_inputs()
-    calls, lines = [], []
-
-    def trainer(pool, source_pool, previous, current, initial, batch_size, train_steps, lr, **kwargs):
-        del pool, source_pool, previous, current, batch_size, lr, kwargs
-        calls.append(True)
-        return (
-            initial,
-            jnp.ones((train_steps,)),
-            jnp.ones((train_steps,)),
-            jnp.zeros((train_steps,), dtype=bool),
-        )
-
-    with patched_driver(trainer=trainer, identity_weights=zero_identity_weights):
-        _, stages = run_driver(
-            samples,
-            potential,
-            flow,
-            train_steps=2,
-            monitor=SimpleNamespace(printer=lines.append),
-            bg_param=controls(tau_ess=0.9, max_retry=2),
-        )
-
-    assert len(calls) == 1
-    assert len(stages) == 1 and stages[0]["t"] == 1.0
-    assert stages[0]["valid_selected_ess"] == 1.0
-    assert stages[0]["selected"] == "trained"
-    assert not bool(jnp.any(stages[0]["update_applied_hist"]))
-    assert any("zero optimizer updates" in line for line in lines)
-    assert any("validation ESS" in line for line in lines)
-    assert not any("training rejected" in line for line in lines)
-
-
-def test_identity_rescues_nonfinite_final() -> None:
-    samples, potential, flow = common_inputs()
-    lines = []
-
-    def trainer(pool, source_pool, previous, current, initial, batch_size, train_steps, lr, **kwargs):
-        del pool, source_pool, previous, current, initial, batch_size, lr, kwargs
-        return (
-            Probe_Flow(jnp.full((1,), jnp.nan)),
-            jnp.ones((train_steps,)),
-            jnp.ones((train_steps,)),
-            jnp.ones((train_steps,), dtype=bool),
-        )
-
-    with patched_driver(trainer=trainer, identity_weights=zero_identity_weights):
-        _, stages = run_driver(
-            samples,
-            potential,
-            flow,
-            monitor=SimpleNamespace(printer=lines.append),
-            bg_param=controls(tau_ess=0.9, max_retry=2),
-        )
-
-    stage = stages[0]
-    assert stage["selected"] == "identity"
-    assert stage["valid_selected_ess"] == 1.0
-    assert stage["valid_trained_ess"] == 0.0
-    assert bool(jnp.isfinite(stage["flow"].shift).all())
-    assert any("nonfinite final trained flow" in line for line in lines)
-    assert not any("training rejected" in line for line in lines)
-
-
-def test_retry_smc_is_diagnostic_after_validation_rejection() -> None:
-    samples, potential, _ = common_inputs()
-    flow = Probe_Flow(jnp.asarray([4.0]))
-    trainer_calls, initial_shifts, smc_calls, lines = [], [], [], []
-
-    def trainer(pool, source_pool, previous, current, initial, batch_size, train_steps, lr, **kwargs):
-        del pool, source_pool, previous, current, batch_size, lr
-        assert kwargs.pop("initialize_from_identity") is False
-        trainer_calls.append(True)
-        initial_shifts.append(float(initial.shift[0]))
-        return (
-            Probe_Flow(jnp.asarray([float(len(trainer_calls))])),
-            jnp.ones((train_steps,)),
-            jnp.ones((train_steps,)),
-            jnp.ones((train_steps,), dtype=bool),
-        )
-
-    def smc_sampler(key, pool, source, target, *, ladder, mc_steps, **kwargs):
-        del key, source, target, kwargs
-        smc_calls.append(True)
-        ess = 1.0 if len(smc_calls) == 1 else 0.0
-        return pool, jnp.full((ladder,), ess), jnp.ones((ladder, mc_steps))
-
-    def peaked_identity(samples, source, target, chunks):
-        del source, target, chunks
-        values = jnp.full((samples.shape[0],), -10.0, dtype=samples.dtype)
-        return values.at[0].set(0.0)
-
-    def importance_weights(samples, source, target, candidate, chunks):
-        del source, target, chunks
-        if float(candidate.shift[0]) == 2.0:
-            return jnp.zeros((samples.shape[0],), dtype=samples.dtype)
-        values = jnp.full((samples.shape[0],), -10.0, dtype=samples.dtype)
-        return values.at[0].set(0.0)
-
-    with patched_driver(
-        trainer=trainer,
-        identity_weights=peaked_identity,
-        importance_weights=importance_weights,
-        smc_sampler=smc_sampler,
-    ):
-        _, stages = run_driver(
-            samples,
-            potential,
-            flow,
-            initialize_from_identity=False,
-            monitor=SimpleNamespace(printer=lines.append),
-            bg_param=controls(
-                shrink_factor=0.7,
-                tau_smc=0.5,
-                tau_ess=0.9,
-                max_retry=2,
-            ),
-        )
-
-    assert len(trainer_calls) == 2 and len(smc_calls) == 2
-    assert initial_shifts == [4.0, 4.0], initial_shifts
-    assert len(stages) == 1 and stages[0]["t"] == 0.7
-    assert stages[0]["valid_selected_ess"] == 1.0
-    assert stages[0]["attempt_status_hist"] == ("rejected", "accepted")
-    assert stages[0]["batch_ess_hist"].shape == (2, 1)
-    assert stages[0]["valid_trained_ess_hist"].shape == (2,)
-    assert stages[0]["valid_identity_ess_hist"].shape == (2,)
-    assert any("training rejected -> shrink" in line for line in lines)
-    assert any("retry SMC ESS=0.000" in line for line in lines)
-    assert any("ACCEPTED" in line for line in lines)
-
-
-def test_selection_failure_is_manifested() -> None:
-    samples, potential, flow = common_inputs()
-
-    def trainer(*args, **kwargs):
-        raise AssertionError("training must not start after failed SMC selection")
-
-    def rejecting_smc(key, pool, source, target, *, ladder, mc_steps, **kwargs):
-        del key, source, target, kwargs
-        return pool, jnp.zeros((ladder,)), jnp.ones((ladder, mc_steps))
-
-    with tempfile.TemporaryDirectory() as temporary:
-        with patched_driver(
-            trainer=trainer,
-            identity_weights=zero_identity_weights,
-            smc_sampler=rejecting_smc,
-        ):
-            _, stages = run_driver(
-                samples,
-                potential,
-                flow,
-                flow_dir=temporary,
-                monitor=SimpleNamespace(printer=lambda _: None),
-                bg_param=controls(tau_smc=0.9),
-            )
-        assert stages == []
-        manifest = json.loads(
-            (Path(temporary) / "attempts.json").read_text(encoding="utf-8")
-        )
-        assert manifest["schema_version"] == 2
-        assert manifest["initialized_from_identity"] is True
-        assert manifest["attempts"] == []
-        run_state = manifest["run_state"]
-        assert run_state["status"] == "incomplete"
-        assert run_state["terminal_reason"] == "smc_selection_failed"
-        assert run_state["terminal_stage"] == 1
-        assert 0.0 < run_state["terminal_t"] <= 1.0
-
-
-def test_default_true_retries_and_terminal_manifest() -> None:
-    samples, potential, _ = common_inputs()
-    flow = Probe_Flow(jnp.asarray([4.0]))
-    initial_shifts, flags = [], []
-
-    def trainer(pool, source_pool, previous, current, initial, batch_size, train_steps, lr, **kwargs):
-        del pool, source_pool, previous, current, batch_size, lr
-        initial_shifts.append(float(initial.shift[0]))
-        flags.append(kwargs.pop("initialize_from_identity"))
-        candidate = Probe_Flow(jnp.asarray([float(len(initial_shifts))]))
-        return (
-            candidate,
-            jnp.ones((train_steps,)),
-            jnp.ones((train_steps,)),
-            jnp.ones((train_steps,), dtype=bool),
-        )
-
-    def peaked_weights(samples, *args):
-        del args
-        values = jnp.full((samples.shape[0],), -10.0, dtype=samples.dtype)
-        return values.at[0].set(0.0)
-
-    original_save = bg.save_mixed_flow
-
-    def save_probe(path, candidate):
-        del candidate
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("probe flow\n", encoding="utf-8")
-
-    try:
-        bg.save_mixed_flow = save_probe
-        with tempfile.TemporaryDirectory() as temporary:
-            with patched_driver(
-                trainer=trainer,
-                identity_weights=peaked_weights,
-                importance_weights=peaked_weights,
-            ):
-                _, stages = run_driver(
-                    samples,
-                    potential,
-                    flow,
-                    flow_dir=temporary,
-                    monitor=SimpleNamespace(printer=lambda _: None),
-                    bg_param=controls(
-                        tau_ess=0.9,
-                        shrink_factor=0.7,
-                        max_retry=2,
-                    ),
-                )
-            assert stages == []
-            manifest = json.loads(
-                (Path(temporary) / "attempts.json").read_text(encoding="utf-8")
-            )
-            assert manifest["schema_version"] == 2
-            assert manifest["initialized_from_identity"] is True
-            assert len(manifest["attempts"]) == 2
-            assert all(
-                record["status"] == "rejected"
-                and record["initialized_from_identity"] is True
-                for record in manifest["attempts"]
-            )
-            assert manifest["run_state"]["status"] == "incomplete"
-            assert manifest["run_state"]["terminal_reason"] == (
-                "training_attempts_failed"
-            )
-    finally:
-        bg.save_mixed_flow = original_save
-
-    assert initial_shifts == [4.0, 4.0]
-    assert flags == [True, True]
+
+class Activation_Flow(eqx.Module):
+    shift: jax.Array
+    activation: object = eqx.field(static=True)
+
+
+class Aliased_Flow(eqx.Module):
+    shift: jax.Array
+    first: object = eqx.field(static=True)
+    second: object = eqx.field(static=True)
+    selected: object = eqx.field(static=True)
+
+
+def shifted_activation(value, offset):
+    return value + offset
+
+
+GLOBAL_OFFSET = 0.0
+
+
+def global_activation(value):
+    return value + GLOBAL_OFFSET
+
+
+class Scaler:
+    def __init__(self, scale):
+        self.scale = scale
+
+    def apply(self, value):
+        return self.scale * value
+
+
+class Unsupported:
+    __slots__ = ()
+
+
+class Slotted_Activation:
+    __slots__ = ("offset",)
+
+    def __init__(self, offset):
+        self.offset = offset
+
+    def __call__(self, value):
+        return value + self.offset
+
+
+class Class_State_Activation:
+    __slots__ = ()
+    offset = 0.0
+
+    def __call__(self, value):
+        return value + self.offset
+
+
+def base_activation(value):
+    return value
+
+
+def decorated_activation(offset):
+    def decorate(function):
+        @wraps(function)
+        def wrapped(value):
+            return function(value) + offset
+
+        return wrapped
+
+    return decorate(base_activation)
+
+
+def attributed_activation(value):
+    return value + attributed_activation.offset
+
+
+attributed_activation.offset = 0.0
+
+
+RG0 = np.asarray((100.0, 0.2))
+RG1 = np.asarray((10.0, 0.0))
+
+
+def _record(t_start, t_end, flow, objective="forward_klx"):
+    rg_start = RG0 + t_start * (RG1 - RG0)
+    rg_end = RG0 + t_end * (RG1 - RG0)
+    continuation = Probe_Flow(flow.shift + 1.0, flow.tag)
+    return {
+        "t": t_end,
+        "t_start": t_start,
+        "rg_start": tuple(rg_start),
+        "rg_end": tuple(rg_end),
+        "flow_rg": tuple(rg_start),
+        "population_rg": tuple(rg_end),
+        "flow_endpoint": "pre_sharpen",
+        "valid_selected_ess": 0.8,
+        "valid_trained_ess": 0.8,
+        "valid_identity_ess": 0.5,
+        "valid_sample_count": 4,
+        "initialized_from_identity": True,
+        "selected": "trained",
+        "flow": continuation,
+        "continuation_flow": continuation,
+        "t_hist": jnp.asarray((t_end,)),
+        "batch_ess_hist": jnp.asarray(((0.7, 0.8),)),
+        "valid_trained_ess_hist": jnp.asarray((0.8,)),
+        "valid_identity_ess_hist": jnp.asarray((0.5,)),
+        "sharpen_ess_hist": jnp.asarray((0.6,)),
+        "attempt_status_hist": ("accepted",),
+        "selection_history": ({"decision": "accepted"},),
+        "smc_ess": jnp.asarray((0.9,)),
+        "smc_acceptance": jnp.asarray(((0.75,),)),
+        "mala_acceptance": jnp.asarray((0.7,)),
+        "hat_mala_acceptance": (
+            jnp.asarray((0.55,)) if objective == "forward_klxx" else None
+        ),
+        "sharpen_ess": 0.6,
+        "sharpen_mala_acceptance": jnp.asarray((0.65,)),
+        "objective": objective,
+        "elapsed_seconds": 1.0,
+    }, continuation
+
+
+def _iterator(calls):
+    def iterate(samples, flow, accepted, number):
+        calls.append((np.asarray(samples).copy(), float(flow.shift[0]), accepted, number))
+        for t_end in (0.5, 1.0):
+            if t_end <= accepted[-1]:
+                continue
+            record, continuation = _record(accepted[-1], t_end, flow)
+            samples = samples + t_end
+            yield samples, record, continuation
+            accepted = (*accepted, t_end)
+            flow = continuation
+
+    return iterate
 
 
 def main() -> None:
-    test_full_pool_and_positive_pool_paths()
-    test_full_pool_klxx_uses_fresh_qt_source_population()
-    test_full_pool_input_validation()
-    test_default_initialization_resets_each_stage_and_trained_tie_wins()
-    test_false_warm_starts_later_stage_and_identity_selection_resets_it()
-    test_only_final_endpoint_is_scored()
-    test_zero_updates_reaches_final_ess_gate()
-    test_identity_rescues_nonfinite_final()
-    test_retry_smc_is_diagnostic_after_validation_rejection()
-    test_selection_failure_is_manifested()
-    test_default_true_retries_and_terminal_manifest()
-    print("PASS molecular final-versus-identity and validation-ESS regressions")
+    assert compute.__all__ == [
+        "boltzmann_forward_KLX_G",
+        "boltzmann_forward_KLXX_G",
+        "iterate_boltzmann",
+    ]
+    assert write.__all__ == ["create", "finish", "stage"]
+    assert store.__all__ == [
+        "fork",
+        "fork_run",
+        "inspect_run",
+        "load",
+        "load_stage_flow",
+        "load_training_history",
+        "load_validation_samples",
+        "manifest",
+        "run",
+        "validate",
+        "validate_run",
+    ]
+    assert "run_dir" not in inspect.signature(
+        compute.boltzmann_forward_KLX_G
+    ).parameters
+    assert "resume" not in inspect.signature(
+        compute.boltzmann_forward_KLXX_G
+    ).parameters
+
+    samples = jnp.arange(8.0).reshape(4, 2)
+    flow = Probe_Flow(jnp.zeros((1,)), 0)
+    config = {"rg_param_0": tuple(RG0), "rg_param_1": tuple(RG1)}
+    calls = []
+
+    def first_stage(*args):
+        yield next(iter(_iterator(calls)(*args)))
+
+    with TemporaryDirectory() as temporary:
+        base = Path(temporary)
+        unsupported_root = base / "unsupported"
+        try:
+            write.create(
+                unsupported_root,
+                "unsupported-template",
+                config,
+                samples,
+                Activation_Flow(jnp.zeros((1,)), Unsupported()),
+            )
+        except TypeError:
+            pass
+        else:
+            raise AssertionError("unsupported static flow value was accepted")
+        assert not unsupported_root.exists()
+
+        slotted_root = base / "slotted"
+        slotted = Activation_Flow(
+            jnp.zeros((1,)), Slotted_Activation(0.0)
+        )
+        write.create(
+            slotted_root, "slotted-template", config, samples, slotted
+        )
+        store.load(slotted_root, slotted)
+        try:
+            store.load(
+                slotted_root,
+                Activation_Flow(
+                    jnp.zeros((1,)), Slotted_Activation(1.0)
+                ),
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("slotted callable state was ignored")
+
+        class_state_root = base / "class-state"
+        class_state = Activation_Flow(
+            jnp.zeros((1,)), Class_State_Activation()
+        )
+        write.create(
+            class_state_root,
+            "class-state-template",
+            config,
+            samples,
+            class_state,
+        )
+        store.load(class_state_root, class_state)
+        Class_State_Activation.offset = 1.0
+        try:
+            store.load(class_state_root, class_state)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("callable class state was ignored")
+        finally:
+            Class_State_Activation.offset = 0.0
+
+        mixed_root = base / "mixed"
+        mixed_flow = Mixed_NSF(
+            jax.random.key(1),
+            Mixed_Domain(2, 1),
+            bins=4,
+            transforms=2,
+            hidden_features=(4,),
+        )
+        mixed_samples = jnp.arange(12.0).reshape(4, 3)
+        mixed_run = write.create(
+            mixed_root, "mixed-template", config, mixed_samples, mixed_flow
+        )
+        mixed_record, _ = _record(0.0, 1.0, flow)
+        mixed_record["flow"] = mixed_flow
+        mixed_record["continuation_flow"] = mixed_flow
+        write.stage(
+            mixed_root, mixed_run, mixed_record, mixed_samples
+        )
+        write.finish(mixed_root, mixed_run, "complete")
+        restored_samples, _, restored_records = store.load(
+            mixed_root, mixed_flow
+        )
+        assert restored_samples.shape == (4, 3)
+        assert len(restored_records) == 1
+
+        alias_root = base / "alias"
+        first = Scaler(1.0)
+        second = Scaler(2.0)
+        aliased = Aliased_Flow(
+            jnp.zeros((1,)), first, second, first
+        )
+        write.create(
+            alias_root, "alias-template", config, samples, aliased
+        )
+        store.load(alias_root, aliased)
+        try:
+            store.load(
+                alias_root,
+                Aliased_Flow(
+                    jnp.zeros((1,)), first, second, second
+                ),
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("static object aliases were conflated")
+
+        occupied = base / "occupied"
+        occupied.mkdir()
+        (occupied / "keep.txt").write_text("keep\n", encoding="utf-8")
+        try:
+            write.create(occupied, "no-overwrite", config, samples, flow)
+        except FileExistsError:
+            pass
+        else:
+            raise AssertionError("nonempty run directory was overwritten")
+
+        mismatch = base / "mismatch"
+        bad_config = {**config, "rg_param_1": (20.0, 0.0)}
+        try:
+            store.run(
+                mismatch,
+                "bad-schedule",
+                bad_config,
+                samples,
+                flow,
+                first_stage,
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("stage regularization ignored the run config")
+        assert store.manifest(mismatch)["stages"] == []
+
+        activation_root = base / "activation"
+        activation = Activation_Flow(
+            jnp.zeros((1,)), partial(shifted_activation, offset=0.0)
+        )
+        write.create(
+            activation_root,
+            "activation-template",
+            config,
+            samples,
+            activation,
+        )
+        store.load(activation_root, activation)
+        try:
+            store.load(
+                activation_root,
+                Activation_Flow(
+                    jnp.zeros((1,)), partial(shifted_activation, offset=1.0)
+                ),
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("partial activation arguments were ignored")
+
+        decorated_root = base / "decorated"
+        decorated = Activation_Flow(
+            jnp.zeros((1,)), decorated_activation(0.0)
+        )
+        write.create(
+            decorated_root, "decorated-template", config, samples, decorated
+        )
+        try:
+            store.load(
+                decorated_root,
+                Activation_Flow(
+                    jnp.zeros((1,)), decorated_activation(1.0)
+                ),
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("decorated activation closure was ignored")
+
+        attributed_root = base / "attributed"
+        attributed = Activation_Flow(jnp.zeros((1,)), attributed_activation)
+        write.create(
+            attributed_root, "attributed-template", config, samples, attributed
+        )
+        attributed_activation.offset = 1.0
+        try:
+            store.load(attributed_root, attributed)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("activation function attributes were ignored")
+        attributed_activation.offset = 0.0
+
+        bound_root = base / "bound"
+        bound = Activation_Flow(jnp.zeros((1,)), Scaler(1.0).apply)
+        write.create(bound_root, "bound-template", config, samples, bound)
+        try:
+            store.load(
+                bound_root,
+                Activation_Flow(jnp.zeros((1,)), Scaler(2.0).apply),
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("bound activation receiver state was ignored")
+
+        primitive_root = base / "primitive"
+        primitive = Probe_Flow(jnp.zeros((1,)), True)
+        write.create(
+            primitive_root, "primitive-template", config, samples, primitive
+        )
+        try:
+            store.load(primitive_root, Probe_Flow(jnp.zeros((1,)), 1))
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("primitive static types were conflated")
+
+        global GLOBAL_OFFSET
+        global_root = base / "global"
+        global_flow = Activation_Flow(jnp.zeros((1,)), global_activation)
+        write.create(global_root, "global-template", config, samples, global_flow)
+        GLOBAL_OFFSET = 1.0
+        try:
+            store.load(global_root, global_flow)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("activation global state was ignored")
+        GLOBAL_OFFSET = 0.0
+
+        klxx_root = base / "klxx"
+        klxx_run = write.create(
+            klxx_root, "klxx-history", config, samples, flow
+        )
+        klxx_record, _ = _record(0.0, 1.0, flow, "forward_klxx")
+        write.stage(klxx_root, klxx_run, klxx_record, samples)
+        write.finish(klxx_root, klxx_run, "complete")
+        assert "hat_mala_acceptance" in store.load_training_history(klxx_root, 1)
+
+        root = base / "run"
+        partial_samples, records = store.run(
+            root, "sharpen-resume", config, samples, flow, first_stage
+        )
+        assert len(records) == 1
+        assert store.manifest(root)["format"] == "jflows-md-stage-resume-1"
+        assert store.manifest(root)["status"] == "exhausted"
+        np.testing.assert_array_equal(partial_samples, samples + 0.5)
+
+        orphan = root / "stages" / "stage_000002"
+        outside = base / "outside"
+        outside.mkdir()
+        orphan.symlink_to(outside, target_is_directory=True)
+        try:
+            store.run(
+                root,
+                "sharpen-resume",
+                config,
+                None,
+                flow,
+                _iterator([]),
+                resume=True,
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("stage symlink was followed")
+        assert not any(outside.iterdir())
+        assert len(store.manifest(root)["stages"]) == 1
+        orphan.unlink()
+
+        orphan.mkdir()
+        (orphan / "unpublished.txt").write_text("ignored\n", encoding="utf-8")
+        loaded, _, loaded_records = store.load(root, flow)
+        np.testing.assert_array_equal(loaded, partial_samples)
+        assert len(loaded_records) == 1
+
+        final, records = store.run(
+            root,
+            "sharpen-resume",
+            config,
+            None,
+            flow,
+            _iterator(calls),
+            resume=True,
+        )
+        np.testing.assert_array_equal(calls[-1][0], partial_samples)
+        assert calls[-1][1:] == (1.0, (0.0, 0.5), 2)
+        np.testing.assert_array_equal(final, samples + 1.5)
+        assert len(records) == 2 and records[-1]["t"] == 1.0
+        assert store.manifest(root)["status"] == "complete"
+
+        loaded, continuation, records = store.load(root, flow)
+        np.testing.assert_array_equal(loaded, final)
+        assert float(continuation.shift[0]) == 2.0
+        assert records[-1]["rg_end"] == tuple(RG1)
+        assert records[-1]["population_rg"] == tuple(RG1)
+        assert records[-1]["flow_endpoint"] == "pre_sharpen"
+        assert records[-1]["sharpen_ess"] == 0.6
+        assert records[-1]["hat_mala_acceptance"] is None
+        assert store.load_validation_samples(root, 2).shape == samples.shape
+        assert float(store.load_stage_flow(root, 2, "selected", flow).shift[0]) == 2.0
+        assert float(store.load_stage_flow(root, 2, "continuation", flow).shift[0]) == 2.0
+        history = store.load_training_history(root, 2)
+        assert history["batch_ess_hist"].shape == (1, 2)
+        np.testing.assert_allclose(history["sharpen_ess_hist"], [0.6])
+        np.testing.assert_allclose(
+            history["sharpen_mala_acceptance"], [0.65], rtol=1e-6, atol=0.0
+        )
+        assert "hat_mala_acceptance" not in history
+        assert (orphan / "unpublished.txt").is_file()
+        try:
+            store.load_validation_samples(root, 0)
+        except IndexError:
+            pass
+        else:
+            raise AssertionError("zero silently selected the final stage")
+
+        for problem_id, resume_config in (
+            ("different", config),
+            ("sharpen-resume", {**config, "rg_param_1": (20.0, 0.0)}),
+        ):
+            try:
+                store.run(
+                    root,
+                    problem_id,
+                    resume_config,
+                    None,
+                    flow,
+                    _iterator(calls),
+                    resume=True,
+                )
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("mismatched resume was accepted")
+        try:
+            store.load(root, Probe_Flow(jnp.zeros((1,)), 1))
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("mismatched static flow template was accepted")
+        try:
+            store.fork(root, root / "recursive")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("recursive fork destination was accepted")
+
+        forked = base / "forked"
+        forked_manifest = store.fork(root, forked, "forked-run")
+        assert forked_manifest["problem_id"] == "forked-run"
+        assert forked_manifest["status"] == "running"
+        escaped = store.manifest(forked)
+        escaped["initial_samples_path"] = "../outside.npy"
+        (forked / "run.json").write_text(
+            json.dumps(escaped), encoding="utf-8"
+        )
+        try:
+            store.validate(forked)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("escaping manifest path was accepted")
+
+    print("PASS molecular post-sharpen stage resume")
 
 
 if __name__ == "__main__":

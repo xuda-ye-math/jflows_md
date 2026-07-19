@@ -9,12 +9,21 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
-from .chirality import signed_volume, support_sign
 from .domain import Mixed_Domain
 
 
 def _logit(value: Array) -> Array:
     return jnp.log(value) - jnp.log1p(-value)
+
+
+def signed_volume(
+    x: Array, center: int, first: int, second: int, third: int
+) -> Array:
+    c = x[..., center, :]
+    a = x[..., first, :] - c
+    b = x[..., second, :] - c
+    d = x[..., third, :] - c
+    return jnp.sum(a * jnp.cross(b, d), axis=-1)
 
 
 class Internal_Coordinates(eqx.Module):
@@ -61,11 +70,7 @@ class Internal_Coordinates(eqx.Module):
         self.n_bonds = self.n_atoms - 1
         self.n_angles = self.n_atoms - 2
         self.n_torsions = self.n_atoms - 3
-        if spec.get("schema_version") != 2:
-            raise ValueError("CoordinateSpec schema must be 2")
         self.jacobian_measure = str(spec.get("jacobian_measure"))
-        if self.jacobian_measure != "rigid_motion_quotient_v1":
-            raise ValueError("CoordinateSpec requires rigid_motion_quotient_v1")
         self.chiral_torsion_index = int(spec.get("chiral_torsion_index", -1))
         self.chiral_torsion_sign = int(spec.get("chiral_torsion_sign", 0))
         self.chirality_atoms = tuple(map(int, spec.get("chirality_atoms", (-1, -1, -1, -1))))
@@ -73,10 +78,6 @@ class Internal_Coordinates(eqx.Module):
         expected_periodic = self.n_torsions - int(self.chiral_torsion_index >= 0)
         expected_euclidean = self.n_bonds + self.n_angles + int(self.chiral_torsion_index >= 0)
         self.domain = Mixed_Domain(expected_euclidean, expected_periodic)
-        if int(spec["euclidean_dim"]) != expected_euclidean:
-            raise ValueError("CoordinateSpec Euclidean dimension is inconsistent")
-        if int(spec["periodic_dim"]) != expected_periodic:
-            raise ValueError("CoordinateSpec periodic dimension is inconsistent")
 
         order = self.order
         refs = self.refs
@@ -97,15 +98,6 @@ class Internal_Coordinates(eqx.Module):
         self.bond_scale = jnp.asarray(spec["bond_log_scale"])
         self.angle_offset = jnp.asarray(spec["angle_logit_offset"])
         self.angle_scale = jnp.asarray(spec["angle_logit_scale"])
-        if self.bond_offset.shape != (self.n_bonds,) or self.bond_scale.shape != (self.n_bonds,):
-            raise ValueError("invalid bond coordinate arrays")
-        if self.angle_offset.shape != (self.n_angles,) or self.angle_scale.shape != (self.n_angles,):
-            raise ValueError("invalid angle coordinate arrays")
-        if bool(jnp.any(self.bond_scale <= 0)) or bool(jnp.any(self.angle_scale <= 0)):
-            raise ValueError("coordinate scales must be positive")
-        if self.chiral_torsion_index >= 0:
-            if self.chiral_torsion_sign not in (-1, 1) or self.chirality_sign not in (-1, 1):
-                raise ValueError("chiral CoordinateSpec requires signed support metadata")
 
     @staticmethod
     def _dihedral4(a: Array, b: Array, c: Array, d: Array) -> Array:
@@ -140,10 +132,6 @@ class Internal_Coordinates(eqx.Module):
         bond_log = self.bond_offset + self.bond_scale * bond_q
         angle_logit = self.angle_offset + self.angle_scale * angle_q
         bonds = jnp.exp(bond_log)
-        # Keep the reconstructed Cartesian representative far enough from a
-        # collinear Z-matrix frame for float32 force gradients to remain
-        # defined. The log-volume below still uses the unclipped logits, so
-        # the target continues to diverge toward the true open boundary.
         epsilon = jnp.sqrt(jnp.finfo(q.dtype).eps)
         angle_fraction = jnp.clip(
             jax.nn.sigmoid(angle_logit), epsilon, 1.0 - epsilon
@@ -204,8 +192,7 @@ class Internal_Coordinates(eqx.Module):
 
         bonds, angles, torsions = self.raw_internal(x)
         bond_q = (jnp.log(bonds) - self.bond_offset) / self.bond_scale
-        epsilon = jnp.sqrt(jnp.finfo(x.dtype).eps)
-        fraction = jnp.clip(angles / jnp.pi, epsilon, 1.0 - epsilon)
+        fraction = angles / jnp.pi
         angle_q = (_logit(fraction) - self.angle_offset) / self.angle_scale
         angle_logit = self.angle_offset + self.angle_scale * angle_q
         if self.chiral_torsion_index < 0:
@@ -213,11 +200,7 @@ class Internal_Coordinates(eqx.Module):
             chiral_eta = jnp.empty((x.shape[0], 0), dtype=x.dtype)
         else:
             tau = torsions[:, self.chiral_torsion_index]
-            chiral_fraction = jnp.clip(
-                self.chiral_torsion_sign * tau / jnp.pi,
-                epsilon,
-                1.0 - epsilon,
-            )
+            chiral_fraction = self.chiral_torsion_sign * tau / jnp.pi
             eta = _logit(chiral_fraction)
             ordinary = torsions[:, self.ordinary_torsion_indices]
             q = jnp.concatenate((bond_q, angle_q, eta[:, None], ordinary), axis=-1)
@@ -275,4 +258,4 @@ class Internal_Coordinates(eqx.Module):
             return jnp.ones(x.shape[:-2], dtype=bool)
         center, first, second, third = self.chirality_atoms
         volume = signed_volume(x, center, first, second, third)
-        return support_sign(volume, self.chirality_sign)
+        return self.chirality_sign * volume > 0.0

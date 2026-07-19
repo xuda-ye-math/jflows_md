@@ -1,110 +1,46 @@
-# jflows_md smoke tests
+# jflows_md smoke suite
 
-Run the complete pure-JAX suite from the repository root:
+Run all tests from the repository root:
 
 ```bash
 XLA_PYTHON_CLIENT_PREALLOCATE=false python smoke/run_all.py
 ```
 
-This assumes the editable `jflows` and `jflows_md` installations described in
-the root README.
+The suite checks:
 
-The tests verify the minimal bundle structure and metadata, pure-JAX energies and forces
-against stored OpenMM Reference results for all three molecules, BAT/chart
-round trips and Jacobians, ADP L-only support, full small-molecule parity
-support, source shapes, JIT compatibility, and the flat `jflows_md.utils`
-interface for mixed-domain MALA and a two-level potential-space SMC bridge. The
-float32 regularization regressions exercise the reference-shifted energy map,
-the live Amber pair-distance floor, exact-collision classifications, stable
-OBC1 coincidence limits, post-cast scalar validation, and preservation of the
-raw physical target. Eager initialization tests cover the direct-trainer
-default (`False`), molecular Boltzmann default (`True`), Boolean validation,
-and exact public signatures. The
-`Mixed_NSF` regression checks cover identity initialization, round trips,
-log-determinants, periodic-representative invariance, seam continuity, and
-finite gradients. The molecular edge suite protects overflow-stable clipping,
-atomic Adam rejection, degenerate log-weight handling, and early rejection of
-invalid domains, sources, flows, MCMC controls, and bridge schedules. A public
-compatibility test verifies the committed `jflows`
-signatures and compiled stage-training scheme, chunked public sampling calls,
-and the transform primitives used by `jflows_md`. Molecular controller tests
-verify fixed-shape chunk execution, disjoint PRNG streams, current flow-artifact
-round trips (including activation, dtype, and static masks), and the default
-float32 runtime. Bundle tests enforce the exact six-file format, safe paths,
-and consistent quotient-measure metadata. A bounded two-particle
-glycerol test compiles the real energy/gradient and one MALA step. A tiny
-synthetic `R^2 x T^1` case compiles and runs mixed KL+X and KL+X+X trainers,
-final-versus-identity full-validation selection, positive-melt quench-and-temper,
-one adaptive Boltzmann-generator stage, and the G-native score-free AIS
-surrogate through a nonidentity mixed flow. Focused controller regressions
-prove the per-attempt initialization policy, the trained-on-tie rule, final-endpoint-only
-scoring, warm-start stage/retry semantics, validation after zero optimizer
-updates, safe identity fallback for a
-nonfinite final flow, and ESS-only retry behavior. The float32 trainer smoke
-also verifies rematerialized training and mixed finite/infinite proposal-weight
-ESS. None of these launches a molecular training run.
+- canonical six-file bundle loading and stored OpenMM parity;
+- BAT round trips, Jacobians, molecular support, and Amber/OBC energies;
+- mixed Euclidean/torus NSF inversion and seam behavior;
+- fixed-shape chunked MALA, SMC, AIS, and quench-and-temper kernels;
+- minimal two-value KLX/KLXX training;
+- linear `(e,r)` sharpening and its post-sharpen endpoint;
+- combined flow/sharpening ESS rejection and adaptive shrink;
+- template-based artifacts and exact computed-stage interruption/resume;
+- the live `jflows` 0.5 interfaces used by this package.
 
-Build a bundle from an Amber topology and coordinate file with:
+The core assumes valid numerical inputs; the suite tests equations and package
+contracts rather than removed defensive rejection paths.
+
+Build a runtime bundle with the installed optional builder:
 
 ```bash
-python bundles/build_molecular_bundles.py \
+python -m jflows_md.bundle_build \
   glycerol molecule.prmtop molecule.rst7 generated/glycerol
 ```
 
+The source-checkout wrapper is
+`python -m bundles.build_molecular_bundles ...`.
+
 ## Opt-in compilation benchmark
 
-`benchmark_compile.py` is intentionally excluded from `run_all.py`. It measures
-cold compile plus first execution and warm execution for local `jflows` NCSF,
-`jflows_md` Mixed_NSF, glycerol energy, glycerol energy plus gradient, one
-small compiled mixed-MALA chunk, and two bounded end-to-end public trainer
-paths:
-
-- `jflows.train.train_forward_KLX_G` on a 36-dimensional periodic toy target;
-- `jflows_md.train.train_forward_KLX_G` on a synthetic
-  `R^25 x T^11` target.
-
-Both trainer workloads use float32, 16 source particles, a batch of 8, one
-Adam step, and both small (two transforms, width 32) and medium (four
-transforms, width 64) flows. The generic trainer additionally uses two levels
-and one ULA step per level. Its AIS path is a biased, score-free,
-final-target-rejuvenated target surrogate: nominal incremental weights are
-paired with rejuvenation at the final target at every level. Classical SMC is a
-separate algorithm whose rejuvenation follows the matching intermediate
-potential; this benchmark does not run classical SMC. The mixed-domain
-molecular trainer consumes a supplied particle set and therefore has no AIS
-or SMC stage. These are synthetic compilation workloads only: no real
-molecular training or scaled run is launched.
-
-Start with one bounded cell per workload:
+`benchmark_compile.py` is excluded from `run_all.py`. It measures cold and
+warm execution for generic NCSF, mixed NSF, glycerol energy/gradient, a mixed
+MALA chunk, and bounded generic/molecular KLX calls.
 
 ```bash
 python smoke/benchmark_compile.py --quick
-```
-
-Run the full bounded grid only when wanted:
-
-```bash
 python smoke/benchmark_compile.py --timeout 480 --warm-repeats 10
 ```
 
-Each cell runs in a fresh subprocess with a fresh JAX persistent-cache
-directory, synchronizes every timed output, and is killed as a process group if
-its timeout expires. Results are flushed after every cell to
-`smoke/compile_benchmark.csv`, so a timeout or interrupted sweep
-still leaves usable partial data. The CSV records success/timeout status,
-backend, device, float dtype, batch and model size, array-element count,
-cold-compile-plus-first latency, warm mean/standard deviation/minimum, trainer
-data/step/level settings, and any worker error. For the trainer cells, the cold
-timing starts before source-particle construction and ends only after the
-public trainer result is synchronized, so it includes sampler/data
-construction and compilation plus execution of the optimizer kernel. Warm
-calls repeat the complete public path and synchronize before recording time.
-The CSV also records process peak host RSS and backend-reported peak GPU bytes
-in use/reserved. Use repeatable `--workload` arguments to select individual
-workloads; `--help` lists their exact names.
-
-`compile_benchmark.csv` is a local generated artifact rather than a distributed
-baseline: timings depend on the exact package revision, JAX/XLA build, cache,
-and device. Regenerate it after any execution-strategy change instead of
-comparing against a CSV produced by another revision. This opt-in benchmark is
-not part of the scientific smoke suite.
+Each benchmark cell runs in a fresh subprocess and writes local measurements
+to `smoke/compile_benchmark.csv`.

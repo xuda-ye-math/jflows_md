@@ -17,13 +17,13 @@ from jflows.utils import resample  # noqa: E402
 from jflows_md import Mixed_Identity  # noqa: E402
 from jflows_md.core.domain import Mixed_Domain  # noqa: E402
 from jflows_md.utils import (  # noqa: E402
-    _mixed_mala_chunk,
     annealed_importance_sampling,
     mixed_mala,
     mixed_quench_and_temper,
     potential_space_smc,
     sequential_monte_carlo,
 )
+from jflows_md.utils.rejuvenation import _mixed_mala_chunk  # noqa: E402
 
 
 class Toy_Mixed_Potential(Potential):
@@ -185,20 +185,6 @@ def main() -> None:
     )[0]
     assert float(jnp.max(jnp.abs(ais - classical_smc))) > 1e-6
 
-    for bad_chunk in (0, initial.shape[0] + 1):
-        try:
-            mixed_mala(
-                jax.random.key(14),
-                initial,
-                target,
-                domain,
-                dt=1e-2,
-                chunks=bad_chunk,
-            )
-        except ValueError:
-            pass
-        else:
-            raise AssertionError(f"chunks={bad_chunk} must fail")
     print("PASS jflows_md eager SMC and score-free target-rejuvenated AIS")
 
 

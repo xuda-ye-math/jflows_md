@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-import math
 from math import pi
 from typing import ClassVar
 
@@ -14,8 +13,26 @@ from jax import Array
 
 from jflows.flow import CircularRQSTransform, MonotonicRQSTransform, Transform
 
-from .checks import integer
 from .domain import Mixed_Domain
+
+
+class _MLP(eqx.Module):
+    layers: tuple[eqx.nn.Linear, ...]
+    activation: Callable[[Array], Array] = eqx.field(static=True)
+
+    def __init__(self, key, in_size, out_size, hidden_features, activation):
+        sizes = (in_size, *hidden_features, out_size)
+        keys = jax.random.split(key, len(sizes) - 1)
+        self.layers = tuple(
+            eqx.nn.Linear(before, after, key=layer_key)
+            for layer_key, before, after in zip(keys, sizes, sizes[1:])
+        )
+        self.activation = activation
+
+    def __call__(self, x):
+        for layer in self.layers[:-1]:
+            x = self.activation(layer(x))
+        return self.layers[-1](x)
 
 
 class Mixed_Domain_Wrap(Transform):
@@ -46,7 +63,7 @@ class Mixed_Spline_Coupling(Transform):
     invariant to the chosen torsion representative.
     """
 
-    network: eqx.nn.MLP
+    network: _MLP
     domain: Mixed_Domain
     condition_indices: tuple[int, ...] = eqx.field(static=True)
     transform_indices: tuple[int, ...] = eqx.field(static=True)
@@ -72,30 +89,10 @@ class Mixed_Spline_Coupling(Transform):
         slope: float,
         activation: Callable[[Array], Array],
     ):
-        condition = tuple(
-            sorted(integer("condition index", index, minimum=0) for index in condition_indices)
-        )
-        if len(set(condition)) != len(condition) or any(
-            index >= domain.dimension for index in condition
-        ):
-            raise ValueError("condition indices must be unique and lie in the domain")
+        condition = tuple(sorted(map(int, condition_indices)))
         transformed = tuple(index for index in range(domain.dimension) if index not in condition)
-        if not condition or not transformed:
-            raise ValueError("a mixed spline coupling needs nonempty condition and transform sets")
-        bins = integer("bins", bins, minimum=2)
-        if (
-            not math.isfinite(float(euclidean_bound))
-            or euclidean_bound <= 0
-            or not math.isfinite(float(slope))
-            or not 0 < slope < 1
-        ):
-            raise ValueError("invalid mixed spline configuration")
-        hidden_features = tuple(
-            integer("hidden feature width", width, minimum=1)
-            for width in hidden_features
-        )
-        if not hidden_features or len(set(hidden_features)) != 1:
-            raise ValueError("hidden_features must contain one repeated positive width")
+        bins = int(bins)
+        hidden_features = tuple(map(int, hidden_features))
 
         euclidean = tuple(index for index in transformed if index < domain.euclidean_dim)
         periodic = tuple(index for index in transformed if index >= domain.euclidean_dim)
@@ -112,13 +109,12 @@ class Mixed_Spline_Coupling(Transform):
 
         in_size = sum(1 if index < domain.euclidean_dim else 2 for index in condition)
         out_size = len(transformed) * 3 * bins
-        self.network = eqx.nn.MLP(
-            in_size=in_size,
-            out_size=out_size,
-            width_size=int(hidden_features[0]),
-            depth=len(hidden_features),
-            activation=activation,
-            key=key,
+        self.network = _MLP(
+            key,
+            in_size,
+            out_size,
+            hidden_features,
+            activation,
         )
 
     def _features(self, x: Array) -> Array:

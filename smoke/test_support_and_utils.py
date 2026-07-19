@@ -16,7 +16,7 @@ import jax.numpy as jnp  # noqa: E402
 
 from jflows.potential import Potential, potential_from  # noqa: E402
 from jflows_md import Mixed_Identity, Molecular_Potential  # noqa: E402
-from jflows_md.core.chirality import signed_volume  # noqa: E402
+from jflows_md.core.coordinates import signed_volume  # noqa: E402
 from jflows_md.core.domain import Mixed_Domain  # noqa: E402
 from jflows_md.system import Molecular_Bundle  # noqa: E402
 from jflows_md.utils import (  # noqa: E402

@@ -505,7 +505,7 @@ def _build_operation(cell: Cell):
                 coeff_lambda=1.0,
                 mc_adjust=False,
                 checkpoint=False,
-                e_clip=1000.0,
+                u_clip=1000.0,
                 g_clip=100.0,
                 seed=12,
             )
@@ -568,17 +568,13 @@ def _build_operation(cell: Cell):
                 train_steps=cell.trainer_steps,
                 lr=1e-3,
                 coeff_lambda=1.0,
-                energy_origin=0.0,
-                e_clip=1000.0,
-                g_clip=100.0,
                 seed=22,
                 checkpoint=False,
             )
 
         def validate(output):
-            trained, ess, kept, updated = output
-            expected = (cell.trainer_steps,)
-            assert ess.shape == kept.shape == updated.shape == expected
+            trained, ess = output
+            assert ess.shape == (cell.trainer_steps,)
             assert type(trained) is type(flow)
 
         return operation, (flow, sample_key), flow, validate, source.mean.dtype

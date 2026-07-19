@@ -1,9 +1,4 @@
-"""Molecular companions for the local :mod:`jflows` package.
-
-The package keeps import-time dependencies light so bundle construction can run
-in an OpenMM/AmberTools environment while training runs in a JAX environment.
-Public JAX objects are imported lazily through ``__getattr__``.
-"""
+"""Mixed-domain molecular companions for :mod:`jflows`."""
 
 from __future__ import annotations
 
@@ -11,6 +6,7 @@ from importlib import import_module
 
 
 __all__ = [
+    "__version__",
     "Mixed_Identity",
     "Mixed_NSF",
     "Molecular_Bundle",
@@ -20,15 +16,12 @@ __all__ = [
     "available_bundles",
     "boltzmann_forward_KLX_G",
     "boltzmann_forward_KLXX_G",
-    "load_mixed_flow",
-    "mixed_flow_metadata",
     "mixed_mala",
     "mixed_quench_and_temper",
     "potential_space_smc",
     "sequential_monte_carlo",
     "train_forward_KLX_G",
     "train_forward_KLXX_G",
-    "save_mixed_flow",
 ]
 
 
@@ -45,15 +38,13 @@ _EXPORTS = {
     "available_bundles": (".system", "available_bundles"),
     "boltzmann_forward_KLX_G": (".boltzmann", "boltzmann_forward_KLX_G"),
     "boltzmann_forward_KLXX_G": (".boltzmann", "boltzmann_forward_KLXX_G"),
-    "load_mixed_flow": (".artifacts", "load_mixed_flow"),
-    "mixed_flow_metadata": (".artifacts", "mixed_flow_metadata"),
     "mixed_mala": (".utils", "mixed_mala"),
     "mixed_quench_and_temper": (".utils", "mixed_quench_and_temper"),
     "potential_space_smc": (".utils", "potential_space_smc"),
     "sequential_monte_carlo": (".utils", "sequential_monte_carlo"),
     "train_forward_KLX_G": (".train", "train_forward_KLX_G"),
     "train_forward_KLXX_G": (".train", "train_forward_KLXX_G"),
-    "save_mixed_flow": (".artifacts", "save_mixed_flow"),
+    "__version__": (".version", "__version__"),
 }
 
 

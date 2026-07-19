@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import math
-
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -12,7 +10,6 @@ from jax import Array
 
 from jflows.flow import ComposedTransform, Flow
 
-from .core.checks import integer
 from .core.domain import Mixed_Domain
 from .core.flow import Mixed_Domain_Wrap, Mixed_Spline_Coupling, zero_coupling
 
@@ -109,57 +106,18 @@ class Mixed_NSF(Flow):
         slope: float = 1e-3,
         activation=jax.nn.silu,
         mask_strategy: str = "random",
-        condition_mask=None,
     ):
-        if not isinstance(domain, Mixed_Domain):
-            raise TypeError("domain must be a Mixed_Domain")
-        if domain.dimension < 2:
-            raise ValueError("Mixed_NSF requires a domain of dimension at least two")
-        bins = integer("bins", bins, minimum=2)
-        transforms = integer("transforms", transforms, minimum=2)
-        if not math.isfinite(float(euclidean_bound)) or euclidean_bound <= 0:
-            raise ValueError("euclidean_bound must be positive and finite")
-        if not math.isfinite(float(slope)) or not 0 < slope < 1:
-            raise ValueError("slope must be finite and lie in (0, 1)")
-        if not hidden_features:
-            raise ValueError("hidden_features must be nonempty")
-        if mask_strategy not in ("random", "balanced"):
-            raise ValueError("mask_strategy must be 'random' or 'balanced'")
-        hidden_features = tuple(
-            integer("hidden feature width", width)
-            for width in hidden_features
-        )
-        if len(set(hidden_features)) != 1:
-            raise ValueError("hidden_features must contain one repeated positive width")
         self.domain = domain
-        self.bins = bins
-        self.transforms = transforms
+        self.bins = int(bins)
+        self.transforms = int(transforms)
         self.euclidean_bound = float(euclidean_bound)
         self.mask_strategy = mask_strategy
         keys = jax.random.split(key, (transforms + 1) // 2)
-        explicit_masks = None
-        if condition_mask is not None:
-            explicit_masks = np.asarray(condition_mask, dtype=bool)
-            expected = (transforms, domain.dimension)
-            if explicit_masks.shape != expected:
-                raise ValueError(
-                    f"condition_mask must have shape {expected}, got "
-                    f"{explicit_masks.shape}"
-                )
-            counts = explicit_masks.sum(axis=1)
-            if np.any(counts == 0) or np.any(counts == domain.dimension):
-                raise ValueError(
-                    "every condition_mask row must condition and transform "
-                    "at least one coordinate"
-                )
+        hidden_features = tuple(map(int, hidden_features))
         layers = []
         for index in range(transforms):
             pair = index // 2
-            if explicit_masks is not None:
-                condition = tuple(
-                    int(value) for value in np.flatnonzero(explicit_masks[index])
-                )
-            elif mask_strategy == "balanced":
+            if mask_strategy == "balanced":
                 first = _balanced_condition_indices(keys[pair], domain)
                 condition = first if index % 2 == 0 else tuple(
                     value for value in range(domain.dimension) if value not in first

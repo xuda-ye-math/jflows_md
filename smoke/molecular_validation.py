@@ -8,7 +8,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ..system import Molecular_Bundle
+from jflows_md.system import Molecular_Bundle
 
 
 @dataclass(frozen=True)

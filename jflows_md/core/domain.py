@@ -1,8 +1,4 @@
-"""Mixed Euclidean/periodic domain metadata."""
-
-from __future__ import annotations
-
-import operator
+"""Mixed Euclidean/periodic domain."""
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -21,27 +17,11 @@ class Mixed_Domain(eqx.Module):
     dimension: int = eqx.field(static=True)
 
     def __init__(self, euclidean_dim: int, periodic_dim: int):
-        if isinstance(euclidean_dim, bool) or isinstance(periodic_dim, bool):
-            raise ValueError("mixed-domain dimensions must be integers, not booleans")
-        try:
-            euclidean_dim = operator.index(euclidean_dim)
-            periodic_dim = operator.index(periodic_dim)
-        except TypeError as exc:
-            raise ValueError("mixed-domain dimensions must be integers") from exc
-        if euclidean_dim < 0 or periodic_dim < 0 or euclidean_dim + periodic_dim <= 0:
-            raise ValueError("invalid mixed-domain dimensions")
-        self.euclidean_dim = euclidean_dim
-        self.periodic_dim = periodic_dim
-        self.dimension = self.euclidean_dim + self.periodic_dim
-
-    def _validate(self, x: Array, name: str) -> None:
-        if x.ndim < 1 or x.shape[-1] != self.dimension:
-            raise ValueError(
-                f"{name} must have last dimension {self.dimension}, got {x.shape}"
-            )
+        self.euclidean_dim = int(euclidean_dim)
+        self.periodic_dim = int(periodic_dim)
+        self.dimension = int(euclidean_dim + periodic_dim)
 
     def wrap(self, x: Array) -> Array:
-        self._validate(x, "mixed-domain coordinates")
         if self.periodic_dim == 0:
             return x
         euclidean = x[..., : self.euclidean_dim]
@@ -51,13 +31,6 @@ class Mixed_Domain(eqx.Module):
 
     def displacement(self, x: Array, y: Array) -> Array:
         """Return the shortest tangent displacement ``x-y``."""
-
-        self._validate(x, "x")
-        self._validate(y, "y")
-        if x.shape != y.shape:
-            raise ValueError(
-                f"x and y must have the same shape, got {x.shape} and {y.shape}"
-            )
         delta = x - y
         if self.periodic_dim == 0:
             return delta

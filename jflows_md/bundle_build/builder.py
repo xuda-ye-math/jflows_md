@@ -11,7 +11,7 @@ from collections.abc import Mapping, Sequence
 import json
 import math
 from pathlib import Path
-import shutil
+import tempfile
 from typing import Any
 
 import numpy as np
@@ -391,8 +391,8 @@ def build_validation_spec(system, positions, *, seed: int = 20260711) -> dict[st
     }
 
 
-def write_bundle(
-    output: str | Path,
+def _write_bundle(
+    output: Path,
     *,
     name: str,
     target: str,
@@ -408,10 +408,6 @@ def write_bundle(
     from openmm import app, unit
     import parmed as pmd
 
-    output = Path(output).resolve()
-    if output.exists():
-        shutil.rmtree(output)
-    output.mkdir(parents=True)
     prmtop_source, coordinate_source = Path(prmtop_path), Path(coordinate_path)
     structure = pmd.load_file(str(prmtop_source), xyz=str(coordinate_source))
     topology_file, system = build_obc1_system(prmtop_source)
@@ -470,4 +466,46 @@ def write_bundle(
         "validation_spec": "validation.json",
     }
     _json_write(output / "manifest.json", manifest)
+    return output
+
+
+def write_bundle(
+    output: str | Path,
+    *,
+    name: str,
+    target: str,
+    prmtop_path: str | Path,
+    coordinate_path: str | Path,
+    model: Mapping[str, Any],
+    canonical_smiles: str,
+    expected_formula: str,
+    expected_charge: int,
+    minimize: bool,
+) -> Path:
+    """Build completely off-path, then publish to a new destination."""
+
+    output = Path(output).resolve()
+    if output.exists():
+        raise FileExistsError(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        dir=output.parent,
+        prefix=f".{output.name}.",
+        ignore_cleanup_errors=True,
+    ) as temporary:
+        _write_bundle(
+            Path(temporary),
+            name=name,
+            target=target,
+            prmtop_path=prmtop_path,
+            coordinate_path=coordinate_path,
+            model=model,
+            canonical_smiles=canonical_smiles,
+            expected_formula=expected_formula,
+            expected_charge=expected_charge,
+            minimize=minimize,
+        )
+        if output.exists():
+            raise FileExistsError(output)
+        Path(temporary).rename(output)
     return output

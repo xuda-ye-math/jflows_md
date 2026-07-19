@@ -19,7 +19,7 @@ from jflows.potential import Potential  # noqa: E402
 from jflows_md import Molecular_Potential  # noqa: E402
 from jflows_md.core.coordinates import Internal_Coordinates  # noqa: E402
 from jflows_md.core.forcefield import Amber_OBC_Force_Field  # noqa: E402
-from jflows_md.core.validation import compare_stored_openmm  # noqa: E402
+from smoke.molecular_validation import compare_stored_openmm  # noqa: E402
 from jflows_md.system import Molecular_Bundle  # noqa: E402
 
 
@@ -71,15 +71,11 @@ def check_regularized_potential() -> None:
     potential = Molecular_Potential.from_bundle(
         "glycerol_gaff2_am1bcc_obc1"
     )
-    regularized = potential.regularized(100.0)
+    regularized = potential.regularized((100.0, 0.0))
     reference = potential.reference_internal()[None]
     np.testing.assert_allclose(
         regularized(reference), potential(reference), rtol=0, atol=1e-12
     )
-    np.testing.assert_allclose(
-        regularized.cartesian(reference), potential.cartesian(reference), rtol=0, atol=0
-    )
-
     q = potential.source().samples(jax.random.key(701), N=16)
     physical = potential.physical_energy(q)
     deformed = regularized.regularized_energy(q)
@@ -98,7 +94,7 @@ def check_regularized_potential() -> None:
     np.testing.assert_allclose(
         regularized(q), potential.beta * deformed - logdet, rtol=0, atol=1e-11
     )
-    higher_cut = potential.regularized(200.0)
+    higher_cut = potential.regularized((200.0, 0.0))
     assert bool(
         jnp.all(
             higher_cut.regularized_energy(q)
@@ -117,20 +113,6 @@ def check_regularized_potential() -> None:
     right = jax.grad(lambda value: regularized._regularize_energy(value))(cut + 1e-3)
     np.testing.assert_allclose(left, 1.0, rtol=0, atol=1e-6)
     np.testing.assert_allclose(right, 1.0, rtol=0, atol=3e-5)
-
-    for args, kwargs in (
-        ((0.0,), {}),
-        ((100.0,), {"pair_distance_floor_nm": -0.1}),
-        ((jnp.inf,), {}),
-        ((True,), {}),
-        ((jnp.asarray([100.0]),), {}),
-    ):
-        try:
-            potential.regularized(*args, **kwargs)
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("invalid molecular regularization was accepted")
 
     print("PASS molecular e/r regularization API")
 
@@ -155,22 +137,7 @@ def check_temperature_override() -> None:
     np.testing.assert_allclose(
         hot.source().variance, 2.0 * cold.source().variance, rtol=0, atol=1e-15
     )
-    guarded = hot.source(defensive_weight=1e-3, defensive_df=3.0)
-    assert guarded.defensive_weight == 1e-3
-    assert guarded.defensive_df == 3.0
-    np.testing.assert_allclose(
-        guarded.variance, hot.source().variance, rtol=0, atol=0
-    )
     assert hot.forcefield.n_atoms == cold.forcefield.n_atoms
-    for invalid in (0.0, -1.0, jnp.inf, jnp.nan):
-        try:
-            Molecular_Potential.from_bundle(
-                "glycerol_gaff2_am1bcc_obc1", temperature_kelvin=invalid
-            )
-        except ValueError:
-            pass
-        else:
-            raise AssertionError(f"invalid temperature was accepted: {invalid}")
     print("PASS molecular target-temperature override")
 
 
@@ -222,23 +189,6 @@ def check_empty_force_interactions() -> None:
     np.testing.assert_array_equal(empty_gradient, jnp.zeros_like(frame))
     assert bool(jnp.isfinite(empty_gradient).all())
 
-    malformed = (
-        ("bond_idx", [0, 1]),
-        ("bond_idx", [[0, 1, 2, 3]]),
-        ("angle_idx", [[[0, 1, 2]]]),
-        ("torsion_idx", [[0, 1, 2]]),
-        ("pair_idx", [[0, 1, 2]]),
-        ("exception_idx", [[0, 1, 2]]),
-    )
-    for name, value in malformed:
-        bad = dict(bundle.system)
-        bad[name] = value
-        try:
-            Amber_OBC_Force_Field(bad)
-        except ValueError:
-            pass
-        else:
-            raise AssertionError(f"malformed {name} shape was accepted: {value}")
     print("PASS empty molecular force-interaction families")
 
 
