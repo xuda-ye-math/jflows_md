@@ -44,7 +44,7 @@ EXPECTED_PUBLIC = {
 
 
 def main() -> None:
-    assert jflows_md.__version__ == "0.5.0"
+    assert jflows_md.__version__ == "0.5.1"
     assert set(jflows_md.__all__) == EXPECTED_PUBLIC
     assert set(available_bundles()) == set(EXPECTED)
     for name, (formula, atoms, dimension, euclidean, periodic) in EXPECTED.items():

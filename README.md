@@ -1,6 +1,6 @@
 # jflows_md
 
-`jflows_md` 0.5.0 is the mixed-domain molecular companion to `jflows` 0.5.0.
+`jflows_md` 0.5.1 is the mixed-domain molecular companion to `jflows` 0.5.1.
 It supplies bundle-backed molecular potentials, flows on
 `R^p x T^q`, molecular KLX/KLXX training, sampling kernels, linear
 regularization sharpening, and complete-stage resume.
