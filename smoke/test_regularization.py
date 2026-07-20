@@ -14,16 +14,20 @@ from jflows_md import Molecular_Potential  # noqa: E402
 from jflows_md.core.forcefield import Amber_OBC_Force_Field  # noqa: E402
 
 
-def _pair_energy(distance, floor):
+def _pair_term(distance, floor, charge=-0.2, sigma=0.3, epsilon=0.8):
     x = jnp.zeros((1, 2, 3)).at[0, 1, 0].set(distance)
     return Amber_OBC_Force_Field._pair_energy_with_floor(
         x,
         jnp.asarray([[0, 1]], dtype=jnp.int32),
-        jnp.asarray([-0.2]),
-        jnp.asarray([0.3]),
-        jnp.asarray([0.8]),
+        jnp.asarray([charge]),
+        jnp.asarray([sigma]),
+        jnp.asarray([epsilon]),
         jnp.asarray(floor),
     )[0]
+
+
+def _pair_energy(distance, floor):
+    return _pair_term(distance, floor)
 
 
 def main() -> None:
@@ -51,6 +55,18 @@ def main() -> None:
         np.testing.assert_array_equal(
             jax.grad(lambda radius: _pair_energy(radius, floor))(distance), 0.0
         )
+    assert bool(jnp.isposinf(_pair_term(0.0, 0.0, 0.0, 0.3, 0.8)))
+    assert bool(jnp.isposinf(_pair_term(0.0, 0.0, 0.2, 0.0, 0.0)))
+    assert bool(jnp.isneginf(_pair_term(0.0, 0.0, -0.2, 0.0, 0.0)))
+    np.testing.assert_array_equal(
+        _pair_term(0.0, 0.0, 0.0, 0.0, 0.0), 0.0
+    )
+    np.testing.assert_array_equal(
+        jax.grad(
+            lambda radius: _pair_term(radius, 0.0, 0.0, 0.0, 0.0)
+        )(0.0),
+        0.0,
+    )
 
     q = potential.reference_internal()[None]
     expected_reference = potential.forcefield._energy_with_pair_distance_floor(

@@ -32,14 +32,17 @@ optional dependency.
 ## Molecular bundles
 
 ```python
-bundle = Molecular_Bundle.load("glycerol_gaff2_am1bcc_obc1")
-names = available_bundles()
+bundle_root = "/path/to/downloaded/bundles"
+names = available_bundles(bundle_root)
+bundle = Molecular_Bundle.load(names[0], root=bundle_root)
 ```
 
 A bundle freezes one audited molecular system, coordinate chart, reference
 configuration, and validation set. `Molecular_Bundle.load(path_or_name,
-verify=True)` accepts either a directory or a bundled short name. With
-verification enabled, the directory must contain exactly six files:
+root=None, verify=True)` accepts either a direct directory or a short name
+selected beneath `root`. When `root` is omitted, a source checkout searches
+its repository bundle directory. With verification enabled, the directory
+must contain exactly six files:
 
 ```text
 bundle/
@@ -74,7 +77,10 @@ bundle/
 The source checkout contains `adp_ff96_obc1`,
 `glycerol_gaff2_am1bcc_obc1`, and
 `diethanolamine_gaff2_am1bcc_obc1`. Installed wheels contain code only, so a
-wheel user supplies an external bundle directory.
+wheel user downloads or prepares bundle data separately. Use
+`available_bundles(root)` to list selectable directory names, then pass one of
+those names and the same `root` to `Molecular_Bundle.load`,
+`Molecular_Potential.from_bundle`, or `OpenMM_Potential.from_bundle`.
 
 ## Mixed molecular coordinates
 

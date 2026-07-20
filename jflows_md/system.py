@@ -21,10 +21,13 @@ def _json(path: Path) -> dict:
         return json.load(stream)
 
 
-def resolve_bundle(path_or_name: str | Path) -> Path:
+def resolve_bundle(
+    path_or_name: str | Path, root: str | Path | None = None
+) -> Path:
     path = Path(path_or_name).expanduser()
     if not path.exists():
-        path = BUNDLE_ROOT / path
+        base = BUNDLE_ROOT if root is None else Path(root).expanduser()
+        path = base / path
     if path.is_file():
         path = path.parent
     return path.resolve()
@@ -40,9 +43,13 @@ class Molecular_Bundle:
 
     @classmethod
     def load(
-        cls, path_or_name: str | Path, *, verify: bool = True
+        cls,
+        path_or_name: str | Path,
+        *,
+        root: str | Path | None = None,
+        verify: bool = True,
     ) -> "Molecular_Bundle":
-        path = resolve_bundle(path_or_name)
+        path = resolve_bundle(path_or_name, root)
         manifest = _json(path / "manifest.json")
         if verify and {item.name for item in path.iterdir()} != _FILES:
             raise ValueError(f"invalid molecular bundle contents: {path}")
@@ -68,7 +75,7 @@ class Molecular_Bundle:
 
 
 def available_bundles(root: str | Path | None = None) -> tuple[str, ...]:
-    base = BUNDLE_ROOT if root is None else Path(root)
+    base = BUNDLE_ROOT if root is None else Path(root).expanduser()
     if not base.is_dir():
         return ()
     return tuple(

@@ -57,6 +57,40 @@ def main() -> None:
     saturated_energy = target(saturated)
     assert bool(jnp.logical_not(jnp.isnan(saturated_energy)).all())
 
+    boundary_positions, boundary_logdet = target.coordinates.to_cartesian(
+        saturated
+    )
+    boundary_internal, boundary_inverse_logdet = target.coordinates.to_internal(
+        boundary_positions
+    )
+    assert bool(
+        jnp.isfinite(boundary_internal).all()
+        & jnp.isfinite(boundary_inverse_logdet).all()
+        & jnp.logical_not(jnp.isnan(boundary_logdet)).all()
+    )
+
+    chiral = Molecular_Potential.from_bundle("adp_ff96_obc1")
+    chiral_boundary = jnp.repeat(chiral.reference_internal()[None], 2, axis=0)
+    angle_slice = slice(
+        chiral.coordinates.n_bonds,
+        chiral.coordinates.n_bonds + chiral.coordinates.n_angles,
+    )
+    extremes = jnp.asarray([[-100.0], [100.0]], dtype=jnp.float32)
+    chiral_boundary = chiral_boundary.at[:, angle_slice].set(extremes)
+    chiral_index = chiral.coordinates.n_bonds + chiral.coordinates.n_angles
+    chiral_boundary = chiral_boundary.at[:, chiral_index].set(extremes[:, 0])
+    chiral_positions, chiral_logdet = chiral.coordinates.to_cartesian(
+        chiral_boundary
+    )
+    chiral_internal, chiral_inverse_logdet = chiral.coordinates.to_internal(
+        chiral_positions
+    )
+    assert bool(
+        jnp.isfinite(chiral_internal).all()
+        & jnp.isfinite(chiral_inverse_logdet).all()
+        & jnp.logical_not(jnp.isnan(chiral_logdet)).all()
+    )
+
     started = time.perf_counter()
     moved, acceptance = mixed_mala(
         jax.random.key(30),

@@ -32,6 +32,14 @@ class Shifted(Potential):
         return 0.5 * jnp.sum(delta**2, axis=-1)
 
 
+class Nonfinite_Gradient(Potential):
+    def __call__(self, samples):
+        return jnp.zeros(samples.shape[0], dtype=samples.dtype)
+
+    def grad(self, samples):
+        return jnp.full_like(samples, jnp.nan)
+
+
 def main() -> None:
     domain = Mixed_Domain(2, 1)
     source = Molecular_Source(domain)
@@ -42,6 +50,18 @@ def main() -> None:
     )
     assert stepped.shape == samples.shape and accepted.shape == (12,)
     assert wrapped_normal_relative_error_bound(1e-4, 3) < 1e-12
+
+    unchanged, invalid_accepted = mixed_mala_step(
+        jax.random.key(22),
+        samples,
+        Nonfinite_Gradient(),
+        domain,
+        dt=1e-4,
+        image_radius=3,
+    )
+    assert not bool(invalid_accepted.any())
+    assert bool(jnp.array_equal(unchanged, samples))
+
     smc, ess, acceptance = sequential_monte_carlo(
         jax.random.key(3),
         samples,

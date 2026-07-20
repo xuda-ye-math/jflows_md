@@ -80,6 +80,9 @@ sharpening remain outside this medium-level interface.
 <tr><td><code>coeff_lambda</code></td><td>coefficient of the target-sample X penalty</td></tr>
 <tr><td><code>seed</code></td><td>integer or JAX value folded into the trainer namespace</td></tr>
 <tr><td><code>checkpoint</code></td><td>rematerialize the loss calculation during reverse-mode differentiation</td></tr>
+<tr><td><code>u_clip</code></td><td>exclude nonfinite target-energy rows and, when finite, rows above this absolute energy threshold</td></tr>
+<tr><td><code>g_clip</code></td><td>stable global gradient-norm limit; infinity disables clipping</td></tr>
+<tr><td><code>lr_warmup</code></td><td>number of steps used to linearly warm the learning rate from <code>lr / lr_warmup</code> to <code>lr</code></td></tr>
 <tr><td><code>initialize_from_identity</code></td><td>replace the supplied flow by <code>flow.zeros()</code> before training</td></tr>
 <tr><td><code>t_start</code>, <code>t_end</code></td><td>stage labels supplied to the monitor</td></tr>
 </tbody>
@@ -89,6 +92,11 @@ sharpening remain outside this medium-level interface.
 
 `checkpoint=True` changes the memory/runtime tradeoff by recomputing the loss
 during the backward pass. It does not change the mathematical objective.
+
+Rows with nonfinite target energies or nonfinite log-density ratios never enter
+the molecular loss. Adam commits parameters, both moment trees, and its update
+counter atomically only when the loss, gradients, and complete candidate state
+are finite. A rejected step therefore cannot poison a later finite update.
 
 ## Monitoring
 
@@ -121,6 +129,9 @@ train_forward_KLX_G(
     checkpoint=False,
     *,
     initialize_from_identity=False,
+    u_clip=float("inf"),
+    g_clip=float("inf"),
+    lr_warmup=0,
     t_start=0.0,
     t_end=1.0,
 )
@@ -195,6 +206,9 @@ train_forward_KLXX_G(
     checkpoint=False,
     *,
     initialize_from_identity=False,
+    u_clip=float("inf"),
+    g_clip=float("inf"),
+    lr_warmup=0,
     t_start=0.0,
     t_end=1.0,
 )

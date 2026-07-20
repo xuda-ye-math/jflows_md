@@ -9,7 +9,11 @@ os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
 
-from jflows_md import Molecular_Potential, Molecular_Source  # noqa: E402
+from jflows_md import (  # noqa: E402
+    Mixed_Identity,
+    Molecular_Potential,
+    Molecular_Source,
+)
 from jflows_md.boltzmann import (  # noqa: E402
     boltzmann_forward_KLX_G,
     boltzmann_forward_KLXX_G,
@@ -23,8 +27,10 @@ def main() -> None:
         parameters = inspect.signature(trainer).parameters
         assert parameters["initialize_from_identity"].default is False
         assert "e_clip" not in parameters
-        assert "g_clip" not in parameters
-        assert "lr_warmup" not in parameters
+        assert "energy_origin" not in parameters
+        assert parameters["u_clip"].default == float("inf")
+        assert parameters["g_clip"].default == float("inf")
+        assert parameters["lr_warmup"].default == 0
         assert "t_start" in parameters and "t_end" in parameters
     for generator in (boltzmann_forward_KLX_G, boltzmann_forward_KLXX_G):
         parameters = inspect.signature(generator).parameters
@@ -34,6 +40,9 @@ def main() -> None:
         assert "flow_dir" not in parameters
         assert "resume" not in parameters
         assert "run_dir" not in parameters
+        assert parameters["u_clip"].default == float("inf")
+        assert parameters["g_clip"].default == float("inf")
+        assert parameters["lr_warmup"].default == 0
 
     domain = Mixed_Domain(2, 1)
     source = Molecular_Source(domain, mean=[0, 0], variance=[1, 1])
@@ -41,6 +50,19 @@ def main() -> None:
     assert samples.shape == (4, 3)
     assert samples.dtype == jnp.float32
     assert source(samples).shape == (4,)
+    identity, ess = train_forward_KLX_G(
+        samples,
+        samples,
+        source,
+        source,
+        Mixed_Identity(domain),
+        4,
+        2,
+        1e-3,
+        g_clip=1.0,
+    )
+    assert identity(samples).shape == samples.shape
+    assert ess.shape == (2,) and bool(jnp.isfinite(ess).all())
     target = Molecular_Potential.from_bundle("glycerol_gaff2_am1bcc_obc1")
     assert target.source().samples(jax.random.key(21), 1).dtype == jnp.float32
     print("PASS modern minimal molecular API")

@@ -13,7 +13,12 @@ from jflows.train import Monitor  # noqa: E402
 from jflows.utils import compute_ESS_log  # noqa: E402
 from jflows_md import Mixed_NSF, Molecular_Source  # noqa: E402
 from jflows_md.core.domain import Mixed_Domain  # noqa: E402
-from jflows_md.train import train_forward_KLX_G  # noqa: E402
+from jflows_md.train import (  # noqa: E402
+    _adam,
+    _clip_global,
+    _learning_rate,
+    train_forward_KLX_G,
+)
 
 
 class Toy_Target(Potential):
@@ -30,6 +35,83 @@ class Toy_Target(Potential):
 
 def main() -> None:
     assert not jax.config.x64_enabled
+
+    params = (jnp.asarray([1.0], dtype=jnp.float32),)
+    moments = jax.tree.map(jnp.zeros_like, params)
+    rejected = _adam(
+        params,
+        moments,
+        moments,
+        (jnp.asarray([jnp.nan], dtype=jnp.float32),),
+        jnp.asarray(0.0),
+        jnp.asarray(0, dtype=jnp.int32),
+        jnp.asarray(1e-3),
+        float("inf"),
+        jnp.asarray(True),
+    )
+    assert all(
+        bool(jnp.array_equal(left, right))
+        for left, right in zip(
+            jax.tree.leaves(rejected[:3]),
+            (params[0], moments[0], moments[0]),
+        )
+    )
+    assert int(rejected[3]) == 0
+
+    overflowed = _adam(
+        params,
+        moments,
+        moments,
+        (jnp.asarray([3e30], dtype=jnp.float32),),
+        jnp.asarray(0.0),
+        jnp.asarray(0, dtype=jnp.int32),
+        jnp.asarray(1e-3),
+        float("inf"),
+        jnp.asarray(True),
+    )
+    assert all(
+        bool(jnp.array_equal(left, right))
+        for left, right in zip(
+            jax.tree.leaves(overflowed[:3]),
+            (params[0], moments[0], moments[0]),
+        )
+    )
+    assert int(overflowed[3]) == 0
+    clean_gradient = (jnp.asarray([1.0], dtype=jnp.float32),)
+    recovered = _adam(
+        overflowed[0],
+        overflowed[1],
+        overflowed[2],
+        clean_gradient,
+        jnp.asarray(0.0),
+        overflowed[3],
+        jnp.asarray(1e-3),
+        float("inf"),
+        jnp.asarray(True),
+    )
+    clean = _adam(
+        params,
+        moments,
+        moments,
+        clean_gradient,
+        jnp.asarray(0.0),
+        jnp.asarray(0, dtype=jnp.int32),
+        jnp.asarray(1e-3),
+        float("inf"),
+        jnp.asarray(True),
+    )
+    assert all(
+        bool(jnp.array_equal(left, right))
+        for left, right in zip(jax.tree.leaves(recovered), jax.tree.leaves(clean))
+    )
+    clipped = _clip_global(
+        (jnp.asarray([3e30, -3e30], dtype=jnp.float32),), 1.0
+    )
+    clipped_norm = jnp.sqrt(sum(jnp.sum(value**2) for value in clipped))
+    assert bool(jnp.isfinite(clipped_norm)) and float(clipped_norm) <= 1.000001
+    assert float(_learning_rate(1.0, 4, 1)) == 0.25
+    assert float(_learning_rate(1.0, 4, 4)) == 1.0
+
     domain = Mixed_Domain(2, 1)
     source = Molecular_Source(domain)
     target = Toy_Target(domain)

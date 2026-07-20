@@ -192,7 +192,8 @@ class Internal_Coordinates(eqx.Module):
 
         bonds, angles, torsions = self.raw_internal(x)
         bond_q = (jnp.log(bonds) - self.bond_offset) / self.bond_scale
-        fraction = angles / jnp.pi
+        epsilon = jnp.sqrt(jnp.finfo(x.dtype).eps)
+        fraction = jnp.clip(angles / jnp.pi, epsilon, 1.0 - epsilon)
         angle_q = (_logit(fraction) - self.angle_offset) / self.angle_scale
         angle_logit = self.angle_offset + self.angle_scale * angle_q
         if self.chiral_torsion_index < 0:
@@ -200,7 +201,11 @@ class Internal_Coordinates(eqx.Module):
             chiral_eta = jnp.empty((x.shape[0], 0), dtype=x.dtype)
         else:
             tau = torsions[:, self.chiral_torsion_index]
-            chiral_fraction = self.chiral_torsion_sign * tau / jnp.pi
+            chiral_fraction = jnp.clip(
+                self.chiral_torsion_sign * tau / jnp.pi,
+                epsilon,
+                1.0 - epsilon,
+            )
             eta = _logit(chiral_fraction)
             ordinary = torsions[:, self.ordinary_torsion_indices]
             q = jnp.concatenate((bond_q, angle_q, eta[:, None], ordinary), axis=-1)

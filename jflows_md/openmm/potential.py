@@ -154,11 +154,12 @@ class OpenMM_Potential:
         cls,
         path_or_name: str | Path,
         *,
+        root: str | Path | None = None,
         verify: bool = True,
         temperature_kelvin: float | None = None,
     ):
         return cls(
-            Molecular_Bundle.load(path_or_name, verify=verify),
+            Molecular_Bundle.load(path_or_name, root=root, verify=verify),
             temperature_kelvin=temperature_kelvin,
         )
 

@@ -79,6 +79,7 @@ def main() -> None:
 
     trainer = boltzmann.train_forward_KLX_G
     ess_function = boltzmann.compute_ESS_log
+    mala_function = boltzmann.mixed_mala
     boltzmann.train_forward_KLX_G = lambda *args, **kwargs: (
         args[4],
         jnp.ones((1,)),
@@ -111,9 +112,26 @@ def main() -> None:
         invalid_sharpen_particles, invalid_sharpen_stages = _run(
             samples, source, target, flow, max_retry=1
         )
+        boltzmann.compute_ESS_log = lambda _: jnp.asarray(1.0)
+        mala_calls = iter((False, True))
+
+        def invalid_final_mala(*args, **kwargs):
+            value = args[1]
+            if next(mala_calls):
+                value = jnp.full_like(value, jnp.nan)
+            return value, jnp.ones((1,), dtype=value.dtype)
+
+        boltzmann.mixed_mala = invalid_final_mala
+        try:
+            _run(samples, source, target, flow, max_retry=1)
+        except FloatingPointError as error:
+            post_stage_error = str(error)
+        else:
+            raise AssertionError("nonfinite post-stage population was accepted")
     finally:
         boltzmann.train_forward_KLX_G = trainer
         boltzmann.compute_ESS_log = ess_function
+        boltzmann.mixed_mala = mala_function
 
     assert failed == []
     assert bool(jnp.array_equal(unchanged, samples))
@@ -144,6 +162,7 @@ def main() -> None:
     assert recovery["attempt_status_hist"] == ("rejected", "accepted")
     assert bool(jnp.isnan(recovery["sharpen_ess_hist"][0]))
     assert recovery["sharpen_ess_hist"][1] == 1.0
+    assert post_stage_error == "post-stage samples contain nonfinite coordinates"
     print("PASS combined flow and sharpening ESS gate")
 
 

@@ -285,9 +285,21 @@ validation.json
 ```
 
 A source checkout includes three named bundles: alanine dipeptide, glycerol,
-and diethanolamine. Wheels contain Python code only, so installed users pass an
-external bundle directory. `available_bundles()` returns an empty tuple when
-the default data directory is absent.
+and diethanolamine. Wheels contain Python code only; bundle data must be
+downloaded or prepared separately. An installed user can search an external
+directory and select a bundle by name:
+
+```python
+from jflows_md import Molecular_Bundle, available_bundles
+
+bundle_root = "/path/to/downloaded/bundles"
+names = available_bundles(bundle_root)
+bundle = Molecular_Bundle.load(names[0], root=bundle_root)
+```
+
+The same `root=` keyword is accepted by `Molecular_Potential.from_bundle` and
+`OpenMM_Potential.from_bundle`. `available_bundles()` returns an empty tuple
+when the requested directory is absent or contains no bundles.
 
 Install the runtime against `jflows` 0.5:
 

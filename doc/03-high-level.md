@@ -110,6 +110,9 @@ boltzmann_forward_KLX_G(
     mc_image_radius=3,
     seed=0,
     checkpoint=False,
+    u_clip=float("inf"),
+    g_clip=float("inf"),
+    lr_warmup=0,
 )
 ```
 
@@ -149,6 +152,9 @@ boltzmann_forward_KLXX_G(
     mc_image_radius=3,
     seed=0,
     checkpoint=False,
+    u_clip=float("inf"),
+    g_clip=float("inf"),
+    lr_warmup=0,
 )
 ```
 
@@ -182,6 +188,9 @@ penalty.
 <tr><td><code>chunks</code></td><td>row partitions for SMC, QT, validation weights, and population MALA</td></tr>
 <tr><td><code>initialize_from_identity</code></td><td>identity-start each training stage; <code>False</code> warm-starts from the preceding selected map</td></tr>
 <tr><td><code>checkpoint</code></td><td>rematerialize the trainer loss during backpropagation</td></tr>
+<tr><td><code>u_clip</code></td><td>absolute molecular-energy screen passed to the trainer; nonfinite loss rows are always excluded</td></tr>
+<tr><td><code>g_clip</code></td><td>stable global gradient-norm limit passed to the trainer</td></tr>
+<tr><td><code>lr_warmup</code></td><td>linear learning-rate warmup length passed to the trainer</td></tr>
 <tr><td><code>seed</code></td><td>base key namespace for stage, attempt, and operation keys</td></tr>
 <tr><td><code>rg_param_0</code>, <code>rg_param_1</code></td><td>initial and final <code>(e,r)</code> regularization states</td></tr>
 </tbody>
@@ -272,6 +281,7 @@ current post-sharpen population at U_a
   -> require sharpening ESS >= tau_ess
   -> resample sharpening weights
   -> mixed MALA at U_b^+
+  -> require a finite completed population
   -> emit population, record, and continuation flow
 ```
 

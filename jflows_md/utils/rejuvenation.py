@@ -79,6 +79,9 @@ def mixed_mala_step(
             proposal, mean_forward, domain, 2.0 * dt, image_radius
         )
     )
+    log_alpha = jnp.where(
+        jnp.isfinite(log_alpha), jnp.minimum(log_alpha, 0.0), -jnp.inf
+    )
     accepted = jnp.log(jax.random.uniform(accept_key, energy.shape)) < log_alpha
     return jnp.where(accepted[:, None], proposal, samples), accepted
 

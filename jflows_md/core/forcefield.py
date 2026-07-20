@@ -110,6 +110,8 @@ class Amber_OBC_Force_Field(eqx.Module):
     def _pair_energy(
         x: Array, idx: Array, chargeprod: Array, sigma: Array, epsilon: Array
     ) -> Array:
+        if idx.shape[0] == 0:
+            return jnp.zeros(x.shape[0], dtype=x.dtype)
         distance = jnp.linalg.norm(x[:, idx[:, 0]] - x[:, idx[:, 1]], axis=-1)
         inverse = 1.0 / distance
         sr6 = (sigma * inverse) ** 6
@@ -127,19 +129,33 @@ class Amber_OBC_Force_Field(eqx.Module):
         epsilon: Array,
         pair_distance_floor_nm: Array,
     ) -> Array:
-        """Return nonbonded energy at a hard pair-distance floor."""
-
+        """Return collision-safe nonbonded energy at a hard pair floor."""
+        if idx.shape[0] == 0:
+            return jnp.zeros(x.shape[0], dtype=x.dtype)
         displacement = x[:, idx[:, 0]] - x[:, idx[:, 1]]
-        distance = _distance_with_zero_subgradient(
-            jnp.sum(displacement * displacement, axis=-1)
+        distance_squared = jnp.sum(displacement * displacement, axis=-1)
+        distance = _distance_with_zero_subgradient(distance_squared)
+        effective_distance = jnp.maximum(distance, pair_distance_floor_nm)
+        collision = (distance_squared == 0) & (pair_distance_floor_nm == 0)
+        safe_distance = jnp.where(collision, 1.0, effective_distance)
+        inverse = 1.0 / safe_distance
+
+        charge_active = chargeprod != 0
+        coulomb = COULOMB * chargeprod * jnp.where(charge_active, inverse, 0.0)
+        lj_active = (epsilon > 0) & (sigma > 0)
+        active_sigma = jnp.where(lj_active, sigma, 0.0)
+        sr6 = (active_sigma * inverse) ** 6
+        lennard_jones = jnp.where(
+            lj_active, 4.0 * epsilon * sr6 * (sr6 - 1.0), 0.0
         )
-        inverse = 1.0 / jnp.maximum(distance, pair_distance_floor_nm)
-        sr6 = (sigma * inverse) ** 6
-        return jnp.sum(
-            COULOMB * chargeprod * inverse
-            + 4.0 * epsilon * (sr6 * sr6 - sr6),
-            axis=-1,
+        regular = coulomb + lennard_jones
+        coulomb_collision = jnp.where(
+            chargeprod > 0,
+            jnp.inf,
+            jnp.where(chargeprod < 0, -jnp.inf, 0.0),
         )
+        collision_energy = jnp.where(lj_active, jnp.inf, coulomb_collision)
+        return jnp.sum(jnp.where(collision, collision_energy, regular), axis=-1)
 
     @staticmethod
     def _obc_descreening_integral(

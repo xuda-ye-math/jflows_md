@@ -63,6 +63,13 @@ def main() -> None:
         assert available_bundles(root / "missing") == ()
         shutil.copytree(Molecular_Bundle.load("adp_ff96_obc1").path, root / "one")
         assert available_bundles(root) == ("one",)
+        selected = Molecular_Bundle.load("one", root=root)
+        assert selected.name == "adp_ff96_obc1"
+        assert selected.path == (root / "one").resolve()
+        selected_target = jflows_md.Molecular_Potential.from_bundle(
+            "one", root=root
+        )
+        assert Path(selected_target.bundle_path) == selected.path
         occupied = root / "occupied"
         occupied.mkdir()
         marker = occupied / "keep.txt"

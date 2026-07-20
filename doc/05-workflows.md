@@ -32,9 +32,11 @@ executable evidence lives under `smoke/`.
 ```python
 import jax
 
-from jflows_md import Molecular_Bundle, Molecular_Potential
+from jflows_md import Molecular_Bundle, Molecular_Potential, available_bundles
 
-bundle = Molecular_Bundle.load("glycerol_gaff2_am1bcc_obc1")
+bundle_root = "/path/to/downloaded/bundles"
+bundle_names = available_bundles(bundle_root)
+bundle = Molecular_Bundle.load(bundle_names[0], root=bundle_root)
 target = Molecular_Potential(bundle)
 source = target.source()
 

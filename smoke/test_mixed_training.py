@@ -11,6 +11,7 @@ import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402
 
 from jflows.potential import Potential  # noqa: E402
+from jflows.utils import compute_ESS_log  # noqa: E402
 from jflows_md.boltzmann import (  # noqa: E402
     boltzmann_forward_KLX_G,
     boltzmann_forward_KLXX_G,
@@ -77,6 +78,9 @@ def _controls():
         },
         "chunks": 1,
         "mc_image_radius": 3,
+        "u_clip": 100.0,
+        "g_clip": 1.0,
+        "lr_warmup": 1,
     }
 
 
@@ -105,13 +109,14 @@ def main() -> None:
     samples = source.samples(jax.random.key(300), 16)
 
     hat = source.samples(jax.random.key(301), 16)
+    initial_flow = _flow(domain, 302)
     trained, ess = train_forward_KLXX_G(
         samples,
         samples,
         hat,
         source,
         target.regularized((5.0, 0.2)),
-        _flow(domain, 302),
+        initial_flow,
         domain,
         4,
         1,
@@ -121,6 +126,21 @@ def main() -> None:
     )
     jax.block_until_ready((trained, ess))
     assert ess.shape == (1,)
+    trainer_key = jax.random.fold_in(jax.random.key(37), 303)
+    training_keys = jax.random.split(
+        jax.random.fold_in(trainer_key, 1), 7
+    )
+    source_key = training_keys[1]
+    source_batch = samples[
+        jax.random.choice(source_key, samples.shape[0], (4,), replace=False)
+    ]
+    proposal, ladj = initial_flow.inv_and_ladj(source_batch)
+    expected = compute_ESS_log(
+        source(source_batch)
+        - target.regularized((5.0, 0.2))(proposal)
+        + ladj
+    )
+    assert bool(jnp.allclose(ess[0], expected, atol=1e-6))
 
     particles, stages = boltzmann_forward_KLX_G(
         samples,

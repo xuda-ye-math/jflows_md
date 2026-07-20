@@ -126,6 +126,9 @@ def _training_attempt(
     monitor,
     seed,
     checkpoint,
+    u_clip,
+    g_clip,
+    lr_warmup,
     t_start,
     t_end,
     hat_samples=None,
@@ -144,6 +147,9 @@ def _training_attempt(
             monitor,
             seed,
             checkpoint,
+            u_clip=u_clip,
+            g_clip=g_clip,
+            lr_warmup=lr_warmup,
             t_start=t_start,
             t_end=t_end,
         )
@@ -167,6 +173,9 @@ def _training_attempt(
         monitor,
         seed,
         checkpoint,
+        u_clip=u_clip,
+        g_clip=g_clip,
+        lr_warmup=lr_warmup,
         t_start=t_start,
         t_end=t_end,
     )
@@ -200,7 +209,10 @@ def iterate_boltzmann(
     chunks,
     mc_image_radius,
     checkpoint,
-    seed,
+    u_clip=float("inf"),
+    g_clip=float("inf"),
+    lr_warmup=0,
+    seed=0,
     accepted_t=(0.0,),
     start_stage=1,
 ):
@@ -344,6 +356,9 @@ def iterate_boltzmann(
                 monitor=_stage_monitor(monitor, stage, attempt),
                 seed=trainer_seed,
                 checkpoint=checkpoint,
+                u_clip=u_clip,
+                g_clip=g_clip,
+                lr_warmup=lr_warmup,
                 t_start=t_start,
                 t_end=t_end,
                 hat_samples=hat_samples,
@@ -445,6 +460,10 @@ def iterate_boltzmann(
                 chunks=chunks,
             )
             samples = jax.block_until_ready(samples)
+            if not bool(jnp.all(jnp.isfinite(samples))):
+                raise FloatingPointError(
+                    "post-stage samples contain nonfinite coordinates"
+                )
             status_history.append("accepted")
             accepted_stage = True
             break
@@ -526,6 +545,9 @@ def boltzmann_forward_KLX_G(
     mc_image_radius=3,
     seed=0,
     checkpoint=False,
+    u_clip=float("inf"),
+    g_clip=float("inf"),
+    lr_warmup=0,
 ):
     return run_boltzmann(
         x_valid,
@@ -554,6 +576,9 @@ def boltzmann_forward_KLX_G(
         chunks=chunks,
         mc_image_radius=mc_image_radius,
         checkpoint=checkpoint,
+        u_clip=u_clip,
+        g_clip=g_clip,
+        lr_warmup=lr_warmup,
         seed=seed,
     )
 
@@ -586,6 +611,9 @@ def boltzmann_forward_KLXX_G(
     mc_image_radius=3,
     seed=0,
     checkpoint=False,
+    u_clip=float("inf"),
+    g_clip=float("inf"),
+    lr_warmup=0,
 ):
     return run_boltzmann(
         x_valid,
@@ -614,5 +642,8 @@ def boltzmann_forward_KLXX_G(
         chunks=chunks,
         mc_image_radius=mc_image_radius,
         checkpoint=checkpoint,
+        u_clip=u_clip,
+        g_clip=g_clip,
+        lr_warmup=lr_warmup,
         seed=seed,
     )
