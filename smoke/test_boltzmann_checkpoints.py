@@ -160,6 +160,7 @@ def _iterator(calls):
 
 def main() -> None:
     assert compute.__all__ == [
+        "boltzmann_identity",
         "boltzmann_forward_KLX_G",
         "boltzmann_forward_KLXX_G",
         "iterate_boltzmann",

@@ -139,13 +139,37 @@ trained, batch_ess = train_forward_KLX_G(
 )
 ```
 
-Direct trainers default to `initialize_from_identity=False`. Adaptive
+Direct trainers default to `initialize_from_identity=False`. Adaptive trained
 Boltzmann functions default to `True`, so each accepted-stage attempt starts
 from an identity parameterization unless warm-starting is explicitly selected.
+`boltzmann_identity` performs no flow training at all.
 
 ## Linear sharpening
 
-Both adaptive entry points require two regularization states:
+All three adaptive entry points require two regularization states. The
+identity-only form is:
+
+```python
+from jflows_md.boltzmann import boltzmann_identity
+
+particles, stages = boltzmann_identity(
+    x_valid,
+    source,
+    target,
+    ladder=16,
+    mc_dt=1e-4,
+    mc_steps=4,
+    rg_param_0=(20.0, 0.15),
+    rg_param_1=(1000.0, 0.0),
+)
+```
+
+It omits every flow, training, optimizer, pool, and checkpoint argument.
+Identity removes only the learned proposal: SMC endpoint selection, complete
+population identity ESS, resampling, pre-sharpen MALA, exact regularization
+sharpening, its ESS gate, and final MALA remain active.
+
+The trained form is:
 
 ```python
 from jflows_md.boltzmann import boltzmann_forward_KLX_G
@@ -214,9 +238,10 @@ a stochastic transition between stages.
 ## Complete-stage resume
 
 Persistence mirrors `jflows` 0.5 and remains outside the compute API.
-`jflows_md.boltzmann.write` atomically writes both flows, the post-sharpen
-population, histories, and stage metadata before publishing the stage in
-`run.json`. `jflows_md.boltzmann.load.run` resumes from the last published
+`jflows_md.boltzmann.write` atomically writes the post-sharpen population,
+histories, and stage metadata before publishing the stage in `run.json`.
+Trained runs additionally write both flow artifacts; identity runs write no
+`.eqx` files. `jflows_md.boltzmann.load.run` resumes from the last published
 stage; an incomplete unpublished directory is ignored and recomputed.
 
 ```python

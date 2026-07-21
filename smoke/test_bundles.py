@@ -32,6 +32,7 @@ EXPECTED_PUBLIC = {
     "Molecular_Source",
     "annealed_importance_sampling",
     "available_bundles",
+    "boltzmann_identity",
     "boltzmann_forward_KLX_G",
     "boltzmann_forward_KLXX_G",
     "mixed_mala",

@@ -13,6 +13,7 @@ from jflows_md import (  # noqa: E402
     Mixed_Identity,
     Molecular_Potential,
     Molecular_Source,
+    boltzmann_identity,
 )
 from jflows_md.boltzmann import (  # noqa: E402
     boltzmann_forward_KLX_G,
@@ -43,6 +44,26 @@ def main() -> None:
         assert parameters["u_clip"].default == float("inf")
         assert parameters["g_clip"].default == float("inf")
         assert parameters["lr_warmup"].default == 0
+    identity = inspect.signature(boltzmann_identity).parameters
+    assert tuple(identity) == (
+        "x_valid",
+        "source",
+        "target",
+        "ladder",
+        "mc_dt",
+        "mc_steps",
+        "rg_param_0",
+        "rg_param_1",
+        "monitor",
+        "bg_param",
+        "chunks",
+        "mc_image_radius",
+        "seed",
+    )
+    assert not {
+        "flow", "pool_size", "batch_size", "train_steps", "lr",
+        "checkpoint", "initialize_from_identity",
+    } & set(identity)
 
     domain = Mixed_Domain(2, 1)
     source = Molecular_Source(domain, mean=[0, 0], variance=[1, 1])

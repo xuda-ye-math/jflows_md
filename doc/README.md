@@ -65,10 +65,11 @@ jflows_md
 │       └── save_history / load_history
 └── HIGH LEVEL
     └── boltzmann
+        ├── boltzmann_identity
         ├── boltzmann_forward_KLX_G
         ├── boltzmann_forward_KLXX_G
         ├── iterate_boltzmann
-        ├── adaptive SMC / flow / sharpening gates
+        ├── adaptive SMC / identity-or-flow / sharpening gates
         ├── write: create / stage / finish
         └── load: validate / load / fork / run / stage readers
 ```

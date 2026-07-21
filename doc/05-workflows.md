@@ -18,7 +18,8 @@ executable evidence lives under `smoke/`.
 <tr><td>construct a mixed flow</td><td><code>Mixed_NSF</code></td><td><code>test_mixed_nsf.py</code></td></tr>
 <tr><td>run a custom particle bridge</td><td><code>sequential_monte_carlo</code>, <code>mixed_mala</code></td><td><code>test_support_and_utils.py</code></td></tr>
 <tr><td>train one fixed stage</td><td><code>train_forward_KLX_G</code>, <code>train_forward_KLXX_G</code></td><td><code>test_float32_training.py</code>, <code>test_mixed_training.py</code></td></tr>
-<tr><td>run adaptive regularization sharpening</td><td><code>boltzmann_forward_KLX_G</code>, <code>boltzmann_forward_KLXX_G</code></td><td><code>test_sharpening_gate.py</code></td></tr>
+<tr><td>run adaptive regularization sharpening without flow training</td><td><code>boltzmann_identity</code></td><td><code>test_boltzmann_identity.py</code></td></tr>
+<tr><td>run adaptive regularization sharpening with flow training</td><td><code>boltzmann_forward_KLX_G</code>, <code>boltzmann_forward_KLXX_G</code></td><td><code>test_sharpening_gate.py</code></td></tr>
 <tr><td>resume complete stages</td><td><code>iterate_boltzmann</code>, <code>boltzmann.load.run</code></td><td><code>test_boltzmann_integration.py</code></td></tr>
 <tr><td>run native Cartesian dynamics</td><td><code>OpenMM_Potential</code>, <code>langevin</code>, <code>parallel_tempering</code></td><td><code>test_openmm.py</code></td></tr>
 <tr><td>construct a new bundle</td><td><code>jflows_md.bundle_build</code></td><td><code>test_bundles.py</code></td></tr>

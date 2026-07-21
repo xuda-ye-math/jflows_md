@@ -4,11 +4,14 @@ The high level coordinates adaptive molecular bridge selection, SMC target
 construction, one-stage flow training, trained-versus-identity selection,
 regularization sharpening, population rejuvenation, and complete-stage
 persistence. It is the normal entry point for difficult molecular targets.
+The identity-only route omits flow training while retaining bridge selection,
+regularization sharpening, and rejuvenation.
 
 Public computation imports:
 
 ```python
 from jflows_md.boltzmann import (
+    boltzmann_identity,
     boltzmann_forward_KLX_G,
     boltzmann_forward_KLXX_G,
     iterate_boltzmann,
@@ -83,6 +86,55 @@ Full-validation proposal ESS decides whether the trained flow is better than
 identity and whether the training attempt passes. Sharpening ESS independently
 decides whether the same candidate endpoint can safely advance the
 regularization. Optimizer batch ESS and MALA acceptance are diagnostics only.
+
+## Adaptive identity generator
+
+```python
+boltzmann_identity(
+    x_valid,
+    source,
+    target,
+    ladder,
+    mc_dt,
+    mc_steps,
+    *,
+    rg_param_0,
+    rg_param_1,
+    monitor=None,
+    bg_param=None,
+    chunks=1,
+    mc_image_radius=3,
+    seed=0,
+)
+```
+
+`boltzmann_identity` is the molecular flow-free baseline. It has no `flow`,
+`pool_size`, `batch_size`, `train_steps`, `lr`, checkpoint, optimizer, or
+initialization arguments. For each candidate endpoint it performs:
+
+```text
+current post-sharpen population at U_a
+  -> select candidate b by molecular SMC ESS
+  -> evaluate full-population identity weights from U_a to U_b^-
+  -> require identity ESS >= tau_ess
+  -> resample and mixed MALA at U_b^-
+  -> evaluate exact U_b^- to U_b^+ sharpening weights
+  -> require sharpening ESS >= tau_ess
+  -> resample and mixed MALA at U_b^+
+  -> emit a finite post-sharpen population
+```
+
+Thus identity removes only the trained transport map. Sharpening still takes
+effect and can independently shrink a candidate interval. The same
+`bg_param["tau_ess"]` gates both identity reweighting and sharpening, while
+`tau_smc` gates endpoint selection. `chunks` partitions SMC, identity and
+sharpening weights, and both MALA calls.
+
+The returned `(samples, stages)` follows the same completion rule as the
+trained generators. Each record has `objective="identity"`,
+`selected="identity"`, `rg_start`, `rg_end`, `population_rg=rg_end`, identity
+ESS histories, SMC/MALA histories, and sharpening ESS/MALA histories. It has
+no flow, trained ESS, batch ESS, or initialization fields.
 
 ## Adaptive KLX generator
 
@@ -292,7 +344,7 @@ is the authoritative continuation state.
 
 ## Return values and completion
 
-Both public generators return:
+All three public generators return:
 
 ```python
 samples, stages
@@ -419,7 +471,8 @@ tuning.
 
 The computation functions do not accept filesystem arguments. Persistence is
 implemented by `jflows_md.boltzmann.write` and
-`jflows_md.boltzmann.load` around `iterate_boltzmann`.
+`jflows_md.boltzmann.load` around `iterate_boltzmann` or the flow-free
+`iterate_identity`.
 
 ### Writer API
 
@@ -429,10 +482,12 @@ stage(run_dir, run_record, stage_record, samples)
 finish(run_dir, run_record, status)
 ```
 
-`create` requires an empty destination and writes the initial population,
-initial flow, and manifest. `stage` writes both flows, post-sharpen samples,
-history, and metadata before publishing the stage in `run.json`. `finish`
-marks the manifest `complete` or `exhausted`.
+`create` requires an empty destination and writes the initial population and
+manifest. A trained run also writes its initial flow. `stage` writes
+post-sharpen samples, history, and metadata before publishing the stage in
+`run.json`; trained stages additionally write selected and continuation flows.
+`finish` marks the manifest `complete` or `exhausted`. An identity run passes
+`flow=None`, stores no `.eqx` file, and cannot be mixed with trained stages.
 
 ### Loader API
 
@@ -447,7 +502,8 @@ load_training_history(run_dir, stage)
 ```
 
 `load` returns `(samples, continuation_flow, records)`. Flow deserialization
-requires the same static architecture template used to create the run.
+requires the same static architecture template used to create a trained run.
+For an identity run, call `load(run_dir)` and the continuation is `None`.
 `load_stage_flow` uses one-based stage numbers and `role="selected"` or
 `"continuation"`. `stage=None` in `load_validation_samples` reads the initial
 population.
@@ -502,6 +558,11 @@ template must match. The controller reloads the last published post-sharpen
 population and continuation flow, then starts at the next stage. An incomplete
 unpublished stage directory is not part of the manifest and is ignored.
 
+For identity persistence, the callback calls `iterate_identity`, and both the
+initial and resume calls pass `flow=None`. The run stores the accepted
+post-sharpen population and histories only; resume restores the population,
+accepted `t` values, and next stage number without reconstructing a flow.
+
 ## Stored run tree
 
 ```text
@@ -520,13 +581,26 @@ run_dir/
         └── ...
 ```
 
+An identity run has the thinner tree:
+
+```text
+run_dir/
+├── run.json
+├── initial_samples.npy
+└── stages/
+    └── stage_000001/
+        ├── history.npz
+        ├── samples.npy
+        └── stage.json
+```
+
 The manifest publishes only complete stages. `validate` checks the stage
 schedule, regularization interpolation, objective-specific histories, flow
 paths, population paths, and completion status.
 
 ## Failure and completion rules
 
-- A candidate rejected by SMC is shrunk before training.
+- A candidate rejected by SMC is shrunk before flow or identity evaluation.
 - A candidate rejected by selected validation ESS is not sharpened.
 - A candidate rejected by sharpening ESS emits no stage.
 - A stage is persistable only after both ESS gates pass and post-sharpen MALA
@@ -537,6 +611,10 @@ paths, population paths, and completion status.
 ## Executable references
 
 - `smoke/test_mixed_training.py`: both adaptive objectives on a bounded path.
+- `smoke/test_boltzmann_identity.py`: flow-free identity computation with
+  observed pre- and post-sharpen MALA targets.
+- `smoke/test_boltzmann_identity_artifacts.py`: flow-free save/load/resume with
+  sharpening histories and no `.eqx` artifacts.
 - `smoke/test_sharpening_gate.py`: combined flow/sharpening ESS rejection.
 - `smoke/test_initialization.py`: identity and warm-start behavior.
 - `smoke/test_boltzmann_checkpoints.py`: writer/loader and post-sharpen resume.

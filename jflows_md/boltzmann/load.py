@@ -9,6 +9,8 @@ import numpy as np
 
 from .write import (
     _HISTORY_NAMES,
+    _IDENTITY_HISTORY_NAMES,
+    _IDENTITY_METADATA_NAMES,
     _METADATA_NAMES,
     _check_regularization,
     _flow_template,
@@ -65,9 +67,7 @@ def validate(run_dir) -> dict:
         "problem_id",
         "status",
         "config",
-        "flow_template",
         "initial_samples_path",
-        "initial_flow_path",
         "stages",
     }
     missing = run_fields - set(record)
@@ -77,30 +77,48 @@ def validate(run_dir) -> dict:
         raise ValueError(f"unknown run format: {record['format']}")
     if record["status"] not in ("running", "exhausted", "complete"):
         raise ValueError(f"unknown run status: {record['status']}")
-    required = [record["initial_samples_path"], record["initial_flow_path"]]
+    has_flow = "flow_template" in record or "initial_flow_path" in record
+    if has_flow and not {"flow_template", "initial_flow_path"} <= set(record):
+        raise ValueError("incomplete run flow metadata")
+    required = [record["initial_samples_path"]]
+    if has_flow:
+        required.append(record["initial_flow_path"])
     previous = 0.0
     for number, item in enumerate(record["stages"], start=1):
         if not {"stage", "t", "path"} <= set(item):
             raise ValueError("incomplete stage manifest item")
         saved = _stage(root, item)
-        stage_fields = set(_METADATA_NAMES) | {
-            "stage",
-            "selected_flow_path",
-            "continuation_flow_path",
-            "validation_samples_path",
-            "history_path",
-        }
-        missing = stage_fields - set(saved)
-        if missing:
-            raise ValueError(f"incomplete stage metadata: {sorted(missing)}")
         if item["stage"] != number or saved["stage"] != number:
             raise ValueError("nonconsecutive stage manifest")
         if item["t"] != saved["t"]:
             raise ValueError("stage endpoint disagrees with run manifest")
         if saved["t_start"] != previous or not previous < saved["t"] <= 1.0:
             raise ValueError("invalid accepted-stage schedule")
-        if (
-            saved["flow_endpoint"] != "pre_sharpen"
+        identity = saved.get("objective") == "identity"
+        names = _IDENTITY_METADATA_NAMES if identity else _METADATA_NAMES
+        stage_fields = set(names) | {
+            "stage",
+            "validation_samples_path",
+            "history_path",
+        }
+        if not identity:
+            stage_fields.update({
+                "selected_flow_path",
+                "continuation_flow_path",
+            })
+        missing = stage_fields - set(saved)
+        if missing:
+            raise ValueError(f"incomplete stage metadata: {sorted(missing)}")
+        if identity:
+            if (
+                has_flow
+                or saved["selected"] != "identity"
+                or not np.allclose(saved["population_rg"], saved["rg_end"])
+            ):
+                raise ValueError("invalid identity stage metadata")
+        elif (
+            not has_flow
+            or saved["flow_endpoint"] != "pre_sharpen"
             or not np.allclose(saved["flow_rg"], saved["rg_start"])
             or not np.allclose(saved["population_rg"], saved["rg_end"])
             or saved["selected"] not in ("trained", "identity")
@@ -112,19 +130,22 @@ def validate(run_dir) -> dict:
         if not history.is_file():
             raise FileNotFoundError(history)
         with np.load(history, allow_pickle=False) as data:
-            missing = set(_HISTORY_NAMES) - set(data.files)
+            history_names = (
+                _IDENTITY_HISTORY_NAMES if identity else _HISTORY_NAMES
+            )
+            missing = set(history_names) - set(data.files)
             has_hat = "hat_mala_acceptance" in data.files
         if missing:
             raise ValueError(f"incomplete stage history: {sorted(missing)}")
         if has_hat != (saved["objective"] == "forward_klxx"):
             raise ValueError("history does not match the stage objective")
         previous = saved["t"]
-        required.extend([
-            saved["selected_flow_path"],
-            saved["continuation_flow_path"],
-            saved["validation_samples_path"],
-            saved["history_path"],
-        ])
+        required.extend([saved["validation_samples_path"], saved["history_path"]])
+        if not identity:
+            required.extend([
+                saved["selected_flow_path"],
+                saved["continuation_flow_path"],
+            ])
     for relative in required:
         path = _path(root, relative)
         if not path.is_file():
@@ -134,16 +155,19 @@ def validate(run_dir) -> dict:
     return record
 
 
-def load(run_dir, template):
+def load(run_dir, template=None):
     root = Path(run_dir).expanduser().resolve()
     run_record = validate(root)
-    if _flow_template(template) != run_record["flow_template"]:
-        raise ValueError("flow template does not match the saved run")
+    continuation = None
+    has_flow = "flow_template" in run_record
+    if has_flow:
+        if _flow_template(template) != run_record["flow_template"]:
+            raise ValueError("flow template does not match the saved run")
+        continuation = eqx.tree_deserialise_leaves(
+            _path(root, run_record["initial_flow_path"]), template
+        )
     samples = np.load(
         _path(root, run_record["initial_samples_path"]), allow_pickle=False
-    )
-    continuation = eqx.tree_deserialise_leaves(
-        _path(root, run_record["initial_flow_path"]), template
     )
     records = []
     for item in run_record["stages"]:
@@ -160,32 +184,39 @@ def load(run_dir, template):
             "t_start": float(saved["t_start"]),
             "rg_start": tuple(saved["rg_start"]),
             "rg_end": tuple(saved["rg_end"]),
-            "flow_rg": tuple(saved["flow_rg"]),
             "population_rg": tuple(saved["population_rg"]),
-            "flow_endpoint": saved["flow_endpoint"],
             "valid_selected_ess": float(saved["valid_selected_ess"]),
-            "valid_trained_ess": float(saved["valid_trained_ess"]),
             "valid_identity_ess": float(saved["valid_identity_ess"]),
             "valid_sample_count": int(saved["valid_sample_count"]),
-            "initialized_from_identity": bool(saved["initialized_from_identity"]),
             "selected": saved["selected"],
             "attempt_status_hist": tuple(saved["attempt_status_hist"]),
             "selection_history": tuple(saved["selection_history"]),
             "sharpen_ess": float(saved["sharpen_ess"]),
             "objective": saved["objective"],
             "elapsed_seconds": float(saved["elapsed_seconds"]),
-            "selected_flow_path": saved["selected_flow_path"],
-            "continuation_flow_path": saved["continuation_flow_path"],
             "validation_samples_path": saved["validation_samples_path"],
         })
-        record["hat_mala_acceptance"] = record.get("hat_mala_acceptance")
-        record["flow"] = eqx.tree_deserialise_leaves(
-            _path(root, saved["selected_flow_path"]), template
-        )
-        continuation = eqx.tree_deserialise_leaves(
-            _path(root, saved["continuation_flow_path"]), template
-        )
-        record["continuation_flow"] = continuation
+        if saved["objective"] != "identity":
+            record.update({
+                "flow_rg": tuple(saved["flow_rg"]),
+                "flow_endpoint": saved["flow_endpoint"],
+                "valid_trained_ess": float(saved["valid_trained_ess"]),
+                "initialized_from_identity": bool(
+                    saved["initialized_from_identity"]
+                ),
+                "selected_flow_path": saved["selected_flow_path"],
+                "continuation_flow_path": saved["continuation_flow_path"],
+            })
+            record["hat_mala_acceptance"] = record.get(
+                "hat_mala_acceptance"
+            )
+            record["flow"] = eqx.tree_deserialise_leaves(
+                _path(root, saved["selected_flow_path"]), template
+            )
+            continuation = eqx.tree_deserialise_leaves(
+                _path(root, saved["continuation_flow_path"]), template
+            )
+            record["continuation_flow"] = continuation
         records.append(record)
         samples = np.load(
             _path(root, saved["validation_samples_path"]), allow_pickle=False
@@ -222,6 +253,8 @@ def _stage_item(record, stage):
 def load_stage_flow(run_dir, stage: int, role: str, template):
     root = Path(run_dir).expanduser().resolve()
     record = validate(root)
+    if "flow_template" not in record:
+        raise ValueError("run has no stored flow")
     if _flow_template(template) != record["flow_template"]:
         raise ValueError("flow template does not match the saved run")
     if role not in ("selected", "continuation"):

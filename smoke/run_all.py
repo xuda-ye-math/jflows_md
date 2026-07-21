@@ -12,6 +12,8 @@ HERE = Path(__file__).resolve().parent
 TESTS = (
     "test_bundles.py",
     "test_api_consistency.py",
+    "test_boltzmann_identity.py",
+    "test_boltzmann_identity_artifacts.py",
     "test_artifacts.py",
     "test_jflows_compatibility.py",
     "test_edge_cases.py",

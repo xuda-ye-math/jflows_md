@@ -15,6 +15,7 @@ from ..utils import mixed_mala, mixed_quench_and_temper, sequential_monte_carlo
 
 
 __all__ = [
+    "boltzmann_identity",
     "boltzmann_forward_KLX_G",
     "boltzmann_forward_KLXX_G",
     "iterate_boltzmann",
@@ -179,6 +180,222 @@ def _training_attempt(
         t_start=t_start,
         t_end=t_end,
     )
+
+
+def iterate_identity(
+    samples,
+    source,
+    target,
+    *,
+    ladder,
+    mc_dt,
+    mc_steps,
+    rg_param_0,
+    rg_param_1,
+    monitor,
+    bg_param,
+    chunks,
+    mc_image_radius,
+    seed=0,
+    accepted_t=(0.0,),
+    start_stage=1,
+):
+    """Yield post-sharpen identity-only molecular Boltzmann stages."""
+    samples = jnp.asarray(samples)
+    policy = _policy(bg_param)
+    accepted = [float(value) for value in accepted_t]
+    rg_param_0 = jnp.asarray(rg_param_0)
+    rg_param_1 = jnp.asarray(rg_param_1)
+    base_key = jax.random.key(seed)
+    emit = monitor.printer if monitor is not None else print
+    domain = target.domain
+    stage = start_stage
+
+    while accepted[-1] < 1.0 and stage <= policy["max_stages"]:
+        stage_started = time.perf_counter()
+        t_start = accepted[-1]
+        if len(accepted) == 1:
+            t_end = min(policy["t_safe"], 1.0)
+        else:
+            t_end = min(
+                accepted[-1]
+                + policy["enlarge_factor"] * (accepted[-1] - accepted[-2]),
+                1.0,
+            )
+        if 1.0 - t_end < policy["t_tol"]:
+            t_end = 1.0
+
+        rg_start = _rg(rg_param_0, rg_param_1, t_start)
+        target_start = target.regularized(rg_start)
+        source_bridge = _bridge(source, target_start, t_start)
+        selection_history = []
+        t_history = []
+        identity_history = []
+        sharpen_history = []
+        status_history = []
+        accepted_stage = False
+        selection_index = 0
+        for attempt in range(1, policy["max_retry"] + 1):
+            selected_endpoint = False
+            for _ in range(_SELECTION_LIMIT):
+                if not t_start < t_end:
+                    break
+                selection_index += 1
+                target_soft = _bridge(source, target_start, t_end)
+                _, smc_ess, smc_acceptance = sequential_monte_carlo(
+                    _operation_key(
+                        base_key, 201, stage, attempt, selection_index
+                    ),
+                    samples,
+                    source_bridge,
+                    target_soft,
+                    ladder=ladder,
+                    mc_dt=mc_dt,
+                    mc_steps=mc_steps,
+                    mc_image_radius=mc_image_radius,
+                    domain=domain,
+                    chunks=chunks,
+                )
+                smc_ess, smc_acceptance = jax.block_until_ready(
+                    (smc_ess, smc_acceptance)
+                )
+                minimum_smc_ess = float(jnp.min(smc_ess))
+                selected_endpoint = minimum_smc_ess >= policy["tau_smc"]
+                selection_history.append({
+                    "index": selection_index,
+                    "t_start": float(t_start),
+                    "t_end": float(t_end),
+                    "smc_ess": np.asarray(smc_ess).tolist(),
+                    "minimum_smc_ess": minimum_smc_ess,
+                    "decision": "accepted" if selected_endpoint else "shrink",
+                    "validation_sample_count": int(samples.shape[0]),
+                })
+                emit(
+                    f"[stage {stage:03d} | t: {t_start:.6f} -> {t_end:.6f}] "
+                    f"selection min SMC ESS={minimum_smc_ess:.4f}"
+                )
+                if selected_endpoint:
+                    break
+                t_end = t_start + policy["shrink_factor"] * (t_end - t_start)
+            if not selected_endpoint:
+                return
+
+            target_soft = _bridge(source, target_start, t_end)
+            identity_log_weight = _identity_weights(
+                samples, source_bridge, target_soft, chunks
+            )
+            identity_ess = float(compute_ESS_log(identity_log_weight))
+            t_history.append(t_end)
+            identity_history.append(identity_ess)
+            emit(
+                f"[stage {stage:03d} attempt {attempt:02d} | "
+                f"t: {t_start:.6f} -> {t_end:.6f}] identity "
+                f"ESS={identity_ess:.4f}"
+            )
+            if not identity_ess >= policy["tau_ess"]:
+                sharpen_history.append(float("nan"))
+                status_history.append("rejected")
+                t_end = t_start + policy["shrink_factor"] * (t_end - t_start)
+                continue
+
+            soft_resample_key, soft_mala_key = jax.random.split(
+                _operation_key(base_key, 501, stage, attempt)
+            )
+            soft_samples = resample(
+                soft_resample_key,
+                samples,
+                linear_weights_from_log(identity_log_weight),
+                N=samples.shape[0],
+            )
+            soft_samples, mala_acceptance = mixed_mala(
+                soft_mala_key,
+                soft_samples,
+                target_soft,
+                domain,
+                dt=mc_dt,
+                steps=mc_steps,
+                image_radius=mc_image_radius,
+                chunks=chunks,
+            )
+
+            rg_end = _rg(rg_param_0, rg_param_1, t_end)
+            target_end = target.regularized(rg_end)
+            target_sharp = _bridge(source, target_end, t_end)
+            sharpen_log_weight = _potential_difference(
+                soft_samples, target_soft, target_sharp, chunks
+            )
+            sharpen_ess = float(compute_ESS_log(sharpen_log_weight))
+            sharpen_history.append(sharpen_ess)
+            if not sharpen_ess >= policy["tau_ess"]:
+                status_history.append("rejected")
+                emit(
+                    f"[stage {stage:03d} attempt {attempt:02d} | "
+                    f"t: {t_start:.6f} -> {t_end:.6f}] sharpening "
+                    f"ESS={sharpen_ess:.4f} REJECTED"
+                )
+                t_end = t_start + policy["shrink_factor"] * (t_end - t_start)
+                continue
+
+            sharpen_resample_key, sharpen_mala_key = jax.random.split(
+                _operation_key(base_key, 601, stage, attempt)
+            )
+            samples = resample(
+                sharpen_resample_key,
+                soft_samples,
+                linear_weights_from_log(sharpen_log_weight),
+                N=soft_samples.shape[0],
+            )
+            samples, sharpen_mala_acceptance = mixed_mala(
+                sharpen_mala_key,
+                samples,
+                target_sharp,
+                domain,
+                dt=mc_dt,
+                steps=mc_steps,
+                image_radius=mc_image_radius,
+                chunks=chunks,
+            )
+            samples = jax.block_until_ready(samples)
+            if not bool(jnp.all(jnp.isfinite(samples))):
+                raise FloatingPointError(
+                    "post-stage samples contain nonfinite coordinates"
+                )
+            status_history.append("accepted")
+            accepted_stage = True
+            break
+
+        if not accepted_stage:
+            return
+        record = {
+            "t": float(t_end),
+            "t_start": float(t_start),
+            "rg_start": tuple(float(value) for value in rg_start),
+            "rg_end": tuple(float(value) for value in rg_end),
+            "population_rg": tuple(float(value) for value in rg_end),
+            "valid_selected_ess": float(identity_ess),
+            "valid_identity_ess": float(identity_ess),
+            "valid_sample_count": int(samples.shape[0]),
+            "selected": "identity",
+            "t_hist": jnp.asarray(t_history),
+            "valid_identity_ess_hist": jnp.asarray(identity_history),
+            "sharpen_ess_hist": jnp.asarray(sharpen_history),
+            "attempt_status_hist": tuple(status_history),
+            "selection_history": tuple(selection_history),
+            "smc_ess": smc_ess,
+            "smc_acceptance": smc_acceptance,
+            "mala_acceptance": mala_acceptance,
+            "sharpen_ess": sharpen_ess,
+            "sharpen_mala_acceptance": sharpen_mala_acceptance,
+            "objective": "identity",
+            "elapsed_seconds": float(time.perf_counter() - stage_started),
+        }
+        emit(
+            f"[stage {stage:03d} | t: {t_start:.6f} -> {t_end:.6f}] "
+            f"ACCEPTED sharpening ESS={sharpen_ess:.4f}"
+        )
+        yield samples, record, None
+        accepted.append(t_end)
+        stage += 1
 
 
 def iterate_boltzmann(
@@ -517,6 +734,44 @@ def run_boltzmann(samples, source, target, flow, **controls):
     current = jnp.asarray(samples)
     for current, record, _ in iterate_boltzmann(
         current, source, target, flow, **controls
+    ):
+        stages.append(record)
+    return current, stages
+
+
+def boltzmann_identity(
+    x_valid,
+    source,
+    target,
+    ladder,
+    mc_dt,
+    mc_steps,
+    *,
+    rg_param_0,
+    rg_param_1,
+    monitor=None,
+    bg_param=None,
+    chunks=1,
+    mc_image_radius=3,
+    seed=0,
+):
+    """Run adaptive identity-only molecular Boltzmann stages."""
+    stages = []
+    current = jnp.asarray(x_valid)
+    for current, record, _ in iterate_identity(
+        current,
+        source,
+        target,
+        ladder=ladder,
+        mc_dt=mc_dt,
+        mc_steps=mc_steps,
+        rg_param_0=rg_param_0,
+        rg_param_1=rg_param_1,
+        monitor=monitor,
+        bg_param=bg_param,
+        chunks=chunks,
+        mc_image_radius=mc_image_radius,
+        seed=seed,
     ):
         stages.append(record)
     return current, stages

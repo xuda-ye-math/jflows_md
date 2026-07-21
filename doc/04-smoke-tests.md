@@ -29,6 +29,8 @@ opt-in compilation benchmark is intentionally excluded.
 <tbody>
 <tr><td><code>test_bundles.py</code></td><td>six-file bundle loading, named targets, metadata, and non-overwriting builder behavior</td></tr>
 <tr><td><code>test_api_consistency.py</code></td><td>public v0.5 namespace, signatures, aliases, and retired layout</td></tr>
+<tr><td><code>test_boltzmann_identity.py</code></td><td>flow-free adaptive identity stages with active sharpening and two MALA endpoints</td></tr>
+<tr><td><code>test_boltzmann_identity_artifacts.py</code></td><td>identity stage save/load/resume with sharpening histories and no flow files</td></tr>
 <tr><td><code>test_artifacts.py</code></td><td>template-based mixed-flow, sample, and history round trips</td></tr>
 <tr><td><code>test_jflows_compatibility.py</code></td><td>the live generic <code>jflows</code> interfaces consumed by <code>jflows_md</code></td></tr>
 <tr><td><code>test_edge_cases.py</code></td><td>raw mixed-domain sampler equations and numerical edge cases</td></tr>
@@ -85,6 +87,8 @@ Use these when changing adaptive stage logic, sharpening, or persistence:
 
 ```text
 test_sharpening_gate.py
+test_boltzmann_identity.py
+test_boltzmann_identity_artifacts.py
 test_boltzmann_checkpoints.py
 test_boltzmann_integration.py
 test_mixed_training.py

@@ -21,6 +21,7 @@ from jflows.flow import (  # noqa: E402
     Transform,
 )
 from jflows.potential import Nlog_Gaussian  # noqa: E402
+from jflows.boltzmann import boltzmann_identity as jflows_identity  # noqa: E402
 from jflows.train import train_forward_KLX_G  # noqa: E402
 from jflows.utils import (  # noqa: E402
     annealed_importance_sampling,
@@ -28,7 +29,11 @@ from jflows.utils import (  # noqa: E402
     langevin,
     sequential_monte_carlo,
 )
-from jflows_md import Mixed_NSF, Molecular_Source  # noqa: E402
+from jflows_md import (  # noqa: E402
+    Mixed_NSF,
+    Molecular_Source,
+    boltzmann_identity as molecular_identity,
+)
 from jflows_md.core.domain import Mixed_Domain  # noqa: E402
 
 
@@ -81,6 +86,20 @@ def main() -> None:
     assert callable(langevin)
     assert callable(sequential_monte_carlo)
     assert callable(annealed_importance_sampling)
+    generic_identity = inspect.signature(jflows_identity).parameters
+    mixed_identity = inspect.signature(molecular_identity).parameters
+    assert tuple(generic_identity)[:6] == tuple(mixed_identity)[:6] == (
+        "x_valid", "source", "target", "ladder", "mc_dt", "mc_steps",
+    )
+    assert {"monitor", "bg_param", "chunks", "seed"} <= set(
+        generic_identity
+    ) & set(mixed_identity)
+    assert {"rg_param_0", "rg_param_1", "mc_image_radius"} <= set(
+        mixed_identity
+    )
+    assert not ({
+        "flow", "pool_size", "batch_size", "train_steps", "lr",
+    } & (set(generic_identity) | set(mixed_identity)))
 
     source = Nlog_Gaussian(mean=[0.0, 0.0], variance=[1.0, 1.0])
     target = Nlog_Gaussian(mean=[0.3, -0.2], variance=[0.8, 1.2])
