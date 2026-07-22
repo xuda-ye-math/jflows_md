@@ -10,6 +10,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 import json
 import math
+import operator
 from pathlib import Path
 import tempfile
 from typing import Any
@@ -21,6 +22,53 @@ from .zmatrix import build_zmatrix, validate_zmatrix
 
 KB_KJ_MOL_K = 0.00831446261815324
 ACE_COEFFICIENT = 28.3919551
+
+_LEGACY_COORDINATE_OPTIONS = {
+    "adp": {
+        "zmatrix": {
+            "root": 6,
+            "prefix": (6, 8, 14, 10),
+            "overrides": {
+                8: (6, -1, -1),
+                14: (8, 6, -1),
+                10: (8, 14, 6),
+            },
+        },
+        "fixed_stereocenters": (
+            {
+                "label": "legacy",
+                "torsion_index": 0,
+                "atoms": (8, 6, 14, 10),
+            },
+        ),
+    },
+    "glycerol": {
+        "signed_volume_diagnostics": (
+            {
+                "label": "legacy",
+                "atoms": (2, 1, 3, 4),
+            },
+        ),
+    },
+    "diethanolamine": {
+        "signed_volume_diagnostics": (
+            {
+                "label": "legacy",
+                "atoms": (3, 2, 4, 12),
+            },
+        ),
+    },
+}
+
+
+def _integer(value, *, name: str) -> int:
+    try:
+        result = operator.index(value)
+    except TypeError as exc:
+        raise ValueError(f"{name} must be an integer, got {value!r}") from exc
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer, got {value!r}")
+    return result
 
 
 def _json_write(path: Path, value: Any) -> None:
@@ -240,33 +288,70 @@ def build_coordinate_spec(
     positions_nm: np.ndarray,
     bonds: Sequence[Sequence[int]],
     *,
-    target: str,
+    target: str | None = None,
+    zmatrix: Mapping[str, Any] | None = None,
+    fixed_stereocenters: Sequence[Mapping[str, Any]] = (),
+    signed_volume_diagnostics: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    n_atoms = int(system_spec["n_atoms"])
-    if target == "adp":
-        order, refs = build_zmatrix(
-            bonds,
-            n_atoms,
-            positions=positions_nm,
-            root=6,
-            prefix=(6, 8, 14, 10),
-            overrides={
-                8: (6, -1, -1),
-                14: (8, 6, -1),
-                10: (8, 14, 6),
-            },
+    """Build an explicit mixed-coordinate chart.
+
+    Each fixed stereocenter names a Z-matrix torsion and the four atoms of
+    its signed-volume diagnostic. The reference geometry determines both
+    allowed signs. The optional ``target`` retains the historical coordinate
+    defaults for ADP, glycerol, and diethanolamine when no explicit coordinate
+    option is supplied; otherwise no stereochemistry is inferred from a name.
+    """
+
+    legacy_mode = (
+        target in _LEGACY_COORDINATE_OPTIONS
+        and zmatrix is None
+        and fixed_stereocenters == ()
+        and signed_volume_diagnostics is None
+    )
+    if legacy_mode:
+        legacy = _LEGACY_COORDINATE_OPTIONS[target]
+        zmatrix = legacy.get("zmatrix")
+        fixed_stereocenters = legacy.get("fixed_stereocenters", ())
+        signed_volume_diagnostics = legacy.get(
+            "signed_volume_diagnostics"
         )
-        chiral_index = 0
-        chirality_atoms = (8, 6, 14, 10)
-        diagnostic_atoms = chirality_atoms
-    else:
-        order, refs = build_zmatrix(bonds, n_atoms, positions=positions_nm)
-        chiral_index = -1
-        chirality_atoms = (-1, -1, -1, -1)
-        diagnostic_atoms = {
-            "glycerol": (2, 1, 3, 4),
-            "diethanolamine": (3, 2, 4, 12),
-        }[target]
+
+    n_atoms = _integer(system_spec["n_atoms"], name="n_atoms")
+    if zmatrix is not None and not isinstance(zmatrix, Mapping):
+        raise ValueError("zmatrix must be a mapping")
+    options = dict(zmatrix or {})
+    unknown = set(options) - {"root", "prefix", "overrides"}
+    if unknown:
+        raise ValueError(f"unknown Z-matrix options: {sorted(unknown)}")
+    overrides = options.get("overrides")
+    if overrides is not None:
+        if not isinstance(overrides, Mapping):
+            raise ValueError("Z-matrix overrides must be a mapping")
+        overrides = {
+            _integer(atom, name="Z-matrix override atom"): tuple(
+                _integer(
+                    reference,
+                    name=f"Z-matrix override {atom!r} reference",
+                )
+                for reference in references
+            )
+            for atom, references in overrides.items()
+        }
+    root = options.get("root")
+    if root is not None:
+        root = _integer(root, name="Z-matrix root")
+    prefix = tuple(
+        _integer(atom, name=f"Z-matrix prefix[{position}]")
+        for position, atom in enumerate(options.get("prefix", ()))
+    )
+    order, refs = build_zmatrix(
+        bonds,
+        n_atoms,
+        positions=positions_nm,
+        root=root,
+        prefix=prefix,
+        overrides=overrides,
+    )
     validate_zmatrix(order, refs, bonds)
     raw_bonds, raw_angles, raw_torsions = _raw_internal(positions_nm, order, refs)
 
@@ -300,24 +385,243 @@ def build_coordinate_spec(
         logit_scale = sigma / (math.pi * fraction * (1.0 - fraction))
         angle_scales.append(float(np.clip(logit_scale, 0.02, 0.5)))
 
-    chiral_sign, chirality_sign = 0, 0
-    if chiral_index >= 0:
-        tau = float(raw_torsions[chiral_index])
-        volume = _signed_volume(positions_nm, chirality_atoms)
-        chiral_sign = 1 if tau > 0 else -1
-        chirality_sign = 1 if volume > 0 else -1
-        if abs(tau) >= math.pi or abs(tau) < 1e-6 or abs(volume) < 1e-8:
-            raise ValueError("ADP reference lies too close to a chiral chart boundary")
+    if isinstance(fixed_stereocenters, (str, bytes)) or not isinstance(
+        fixed_stereocenters, Sequence
+    ):
+        raise ValueError("fixed_stereocenters must be a sequence")
+    bond_set = {frozenset(map(int, pair)) for pair in bonds}
+    fixed = []
+    for position, item in enumerate(fixed_stereocenters):
+        if not isinstance(item, Mapping):
+            raise ValueError(
+                f"fixed_stereocenters[{position}] must be a mapping"
+            )
+        label = str(item.get("label", f"stereocenter_{position}"))
+        if not label:
+            raise ValueError(
+                f"fixed_stereocenters[{position}].label must be nonempty"
+        )
+        try:
+            torsion_index = _integer(
+                item["torsion_index"],
+                name=f"fixed_stereocenters[{position}].torsion_index",
+            )
+            atoms = tuple(
+                _integer(
+                    atom,
+                    name=f"fixed_stereocenters[{position}].atoms[{atom_position}]",
+                )
+                for atom_position, atom in enumerate(item["atoms"])
+            )
+        except KeyError as exc:
+            raise ValueError(
+                f"fixed_stereocenters[{position}] is missing {exc.args[0]!r}"
+            ) from exc
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"fixed_stereocenters[{position}] has invalid indices"
+            ) from exc
+        if torsion_index < 0 or torsion_index >= n_atoms - 3:
+            raise ValueError(
+                f"fixed_stereocenters[{position}].torsion_index is out of range"
+            )
+        if len(atoms) != 4 or len(set(atoms)) != 4 or any(
+            atom < 0 or atom >= n_atoms for atom in atoms
+        ):
+            raise ValueError(
+                f"fixed_stereocenters[{position}].atoms must contain four "
+                "distinct in-range indices"
+            )
+        placement = torsion_index + 3
+        placed_atom = order[placement]
+        r1, r2, r3 = refs[placement]
+        if atoms[0] != r1 or set(atoms[1:]) != {r2, r3, placed_atom}:
+            raise ValueError(
+                f"fixed_stereocenters[{position}] is not represented by "
+                "its selected Z-matrix torsion"
+            )
+        if any(
+            frozenset((atoms[0], substituent)) not in bond_set
+            for substituent in atoms[1:]
+        ):
+            raise ValueError(
+                f"fixed_stereocenters[{position}] does not describe three "
+                "substituents bonded to its center"
+            )
+        tau = float(raw_torsions[torsion_index])
+        volume = _signed_volume(positions_nm, atoms)
+        boundary_distance = min(abs(tau), math.pi - abs(tau))
+        if boundary_distance < 1e-6 or abs(volume) < 1e-8:
+            raise ValueError(
+                f"fixed_stereocenters[{position}] reference lies too close "
+                "to a stereochemical chart boundary"
+            )
+        configuration = item.get("configuration")
+        cip_priority_atoms = item.get("cip_priority_atoms")
+        if (configuration is None) != (cip_priority_atoms is None):
+            raise ValueError(
+                f"fixed_stereocenters[{position}] must provide both "
+                "configuration and cip_priority_atoms"
+            )
+        configuration_metadata = {}
+        if configuration is not None:
+            configuration = str(configuration).upper()
+            if configuration not in {"R", "S"}:
+                raise ValueError(
+                    f"fixed_stereocenters[{position}].configuration must be "
+                    "'R' or 'S'"
+                )
+            try:
+                cip_atoms = tuple(
+                    _integer(
+                        atom,
+                        name=(
+                            f"fixed_stereocenters[{position}]."
+                            f"cip_priority_atoms[{atom_position}]"
+                        ),
+                    )
+                    for atom_position, atom in enumerate(cip_priority_atoms)
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"fixed_stereocenters[{position}].cip_priority_atoms "
+                    "is invalid"
+                ) from exc
+            if len(cip_atoms) != 4 or len(set(cip_atoms)) != 4 or any(
+                atom < 0 or atom >= n_atoms for atom in cip_atoms
+            ):
+                raise ValueError(
+                    f"fixed_stereocenters[{position}].cip_priority_atoms "
+                    "must contain four distinct in-range indices"
+                )
+            if any(
+                frozenset((atoms[0], substituent)) not in bond_set
+                for substituent in cip_atoms
+            ):
+                raise ValueError(
+                    f"fixed_stereocenters[{position}].cip_priority_atoms "
+                    "must be the four substituents bonded to the center"
+                )
+            first, second, third, fourth = positions_nm[list(cip_atoms)]
+            cip_volume = float(
+                np.dot(
+                    first - fourth,
+                    np.cross(second - fourth, third - fourth),
+                )
+            )
+            if abs(cip_volume) < 1e-8:
+                raise ValueError(
+                    f"fixed_stereocenters[{position}] reference has "
+                    "degenerate CIP geometry"
+                )
+            observed = "R" if cip_volume < 0.0 else "S"
+            if observed != configuration:
+                raise ValueError(
+                    f"fixed_stereocenters[{position}] reference is {observed}, "
+                    f"expected {configuration}"
+                )
+            configuration_metadata = {
+                "configuration": configuration,
+                "cip_priority_atoms": list(cip_atoms),
+            }
+        fixed.append(
+            {
+                "label": label,
+                "torsion_index": torsion_index,
+                "torsion_sign": 1 if tau > 0 else -1,
+                "atoms": list(atoms),
+                "volume_sign": 1 if volume > 0 else -1,
+                **configuration_metadata,
+            }
+        )
+    labels = [item["label"] for item in fixed]
+    torsion_indices = [item["torsion_index"] for item in fixed]
+    center_atoms = [item["atoms"][0] for item in fixed]
+    if len(set(labels)) != len(labels):
+        raise ValueError("fixed stereocenter labels must be unique")
+    if len(set(torsion_indices)) != len(torsion_indices):
+        raise ValueError("fixed stereocenter torsion indices must be unique")
+    if len(set(center_atoms)) != len(center_atoms):
+        raise ValueError("fixed stereocenter center atoms must be unique")
 
-    euclidean_dim = n_atoms - 1 + n_atoms - 2 + int(chiral_index >= 0)
-    periodic_dim = n_atoms - 3 - int(chiral_index >= 0)
+    if signed_volume_diagnostics is None:
+        diagnostics_input = tuple(
+            {"label": item["label"], "atoms": item["atoms"]}
+            for item in fixed
+        )
+    else:
+        diagnostics_input = signed_volume_diagnostics
+    if isinstance(diagnostics_input, (str, bytes)) or not isinstance(
+        diagnostics_input, Sequence
+    ):
+        raise ValueError("signed_volume_diagnostics must be a sequence")
+    diagnostics = []
+    for position, item in enumerate(diagnostics_input):
+        if not isinstance(item, Mapping):
+            raise ValueError(
+                f"signed_volume_diagnostics[{position}] must be a mapping"
+            )
+        label = str(item.get("label", f"signed_volume_{position}"))
+        try:
+            atoms = tuple(
+                _integer(
+                    atom,
+                    name=(
+                        f"signed_volume_diagnostics[{position}].atoms"
+                        f"[{atom_position}]"
+                    ),
+                )
+                for atom_position, atom in enumerate(item["atoms"])
+            )
+        except KeyError as exc:
+            raise ValueError(
+                f"signed_volume_diagnostics[{position}] is missing 'atoms'"
+            ) from exc
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"signed_volume_diagnostics[{position}].atoms is invalid"
+            ) from exc
+        if not label or len(atoms) != 4 or len(set(atoms)) != 4 or any(
+            atom < 0 or atom >= n_atoms for atom in atoms
+        ):
+            raise ValueError(
+                f"signed_volume_diagnostics[{position}] must have a nonempty "
+                "label and four distinct in-range atom indices"
+            )
+        volume = _signed_volume(positions_nm, atoms)
+        if abs(volume) < 1e-8:
+            raise ValueError(
+                f"signed_volume_diagnostics[{position}] reference volume is "
+                "too close to zero"
+            )
+        diagnostics.append(
+            {
+                "label": label,
+                "atoms": list(atoms),
+                "reference_sign": 1 if volume > 0 else -1,
+            }
+        )
+    diagnostic_labels = [item["label"] for item in diagnostics]
+    if len(set(diagnostic_labels)) != len(diagnostic_labels):
+        raise ValueError("signed-volume diagnostic labels must be unique")
+
+    n_fixed = len(fixed)
+    euclidean_dim = n_atoms - 1 + n_atoms - 2 + n_fixed
+    periodic_dim = n_atoms - 3 - n_fixed
     source_mean = np.zeros(euclidean_dim)
-    if chiral_index >= 0:
-        fraction = chiral_sign * raw_torsions[chiral_index] / math.pi
-        source_mean[-1] = math.log(fraction) - math.log1p(-fraction)
-    return {
-        "schema_version": 2,
-        "chart": "log-bond_logit-angle_quotient_BAT_v2",
+    stereochemical_start = n_atoms - 1 + n_atoms - 2
+    for position, item in enumerate(fixed):
+        fraction = (
+            item["torsion_sign"]
+            * raw_torsions[item["torsion_index"]]
+            / math.pi
+        )
+        source_mean[stereochemical_start + position] = (
+            math.log(fraction) - math.log1p(-fraction)
+        )
+    result = {
+        "schema_version": 3,
+        "chart": "log-bond_logit-angle_quotient_BAT_v3",
         "jacobian_measure": "rigid_motion_quotient_v1",
         "dimension": 3 * n_atoms - 6,
         "euclidean_dim": euclidean_dim,
@@ -329,14 +633,35 @@ def build_coordinate_spec(
         "angle_logit_offset": (np.log(raw_angles / math.pi) - np.log1p(-raw_angles / math.pi)).tolist(),
         "angle_logit_scale": angle_scales,
         "reference_torsions_rad": raw_torsions.tolist(),
-        "chiral_torsion_index": chiral_index,
-        "chiral_torsion_sign": chiral_sign,
-        "chirality_atoms": list(chirality_atoms),
-        "chirality_sign": chirality_sign,
-        "diagnostic_chirality_atoms": list(diagnostic_atoms),
+        "fixed_stereocenters": fixed,
+        "signed_volume_diagnostics": diagnostics,
         "source_mean": source_mean.tolist(),
         "source_variance": np.ones(euclidean_dim).tolist(),
     }
+    if legacy_mode:
+        if fixed:
+            singleton = fixed[0]
+            chiral_torsion_index = singleton["torsion_index"]
+            chiral_torsion_sign = singleton["torsion_sign"]
+            chirality_atoms = singleton["atoms"]
+            chirality_sign = singleton["volume_sign"]
+        else:
+            chiral_torsion_index = -1
+            chiral_torsion_sign = 0
+            chirality_atoms = [-1, -1, -1, -1]
+            chirality_sign = 0
+        result.update(
+            schema_version=2,
+            chart="log-bond_logit-angle_quotient_BAT_v2",
+            chiral_torsion_index=chiral_torsion_index,
+            chiral_torsion_sign=chiral_torsion_sign,
+            chirality_atoms=chirality_atoms,
+            chirality_sign=chirality_sign,
+            diagnostic_chirality_atoms=diagnostics[0]["atoms"],
+        )
+        del result["fixed_stereocenters"]
+        del result["signed_volume_diagnostics"]
+    return result
 
 
 def build_validation_spec(system, positions, *, seed: int = 20260711) -> dict[str, Any]:
@@ -403,6 +728,9 @@ def _write_bundle(
     expected_formula: str,
     expected_charge: int,
     minimize: bool,
+    zmatrix: Mapping[str, Any] | None,
+    fixed_stereocenters: Sequence[Mapping[str, Any]],
+    signed_volume_diagnostics: Sequence[Mapping[str, Any]] | None,
 ) -> Path:
     import openmm as mm
     from openmm import app, unit
@@ -433,7 +761,13 @@ def _write_bundle(
     positions_nm = np.asarray(positions.value_in_unit(unit.nanometer), dtype=float)
     bonds = [[bond.atom1.idx, bond.atom2.idx] for bond in structure.bonds]
     coordinate_spec = build_coordinate_spec(
-        system_spec, positions_nm, bonds, target=target
+        system_spec,
+        positions_nm,
+        bonds,
+        target=target,
+        zmatrix=zmatrix,
+        fixed_stereocenters=fixed_stereocenters,
+        signed_volume_diagnostics=signed_volume_diagnostics,
     )
     validation_spec = build_validation_spec(system, positions)
     system_spec.update(
@@ -481,6 +815,9 @@ def write_bundle(
     expected_formula: str,
     expected_charge: int,
     minimize: bool,
+    zmatrix: Mapping[str, Any] | None = None,
+    fixed_stereocenters: Sequence[Mapping[str, Any]] = (),
+    signed_volume_diagnostics: Sequence[Mapping[str, Any]] | None = None,
 ) -> Path:
     """Build completely off-path, then publish to a new destination."""
 
@@ -504,6 +841,9 @@ def write_bundle(
             expected_formula=expected_formula,
             expected_charge=expected_charge,
             minimize=minimize,
+            zmatrix=zmatrix,
+            fixed_stereocenters=fixed_stereocenters,
+            signed_volume_diagnostics=signed_volume_diagnostics,
         )
         if output.exists():
             raise FileExistsError(output)

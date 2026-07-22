@@ -19,11 +19,49 @@ from jflows_md.boltzmann import (  # noqa: E402
     boltzmann_forward_KLX_G,
     boltzmann_forward_KLXX_G,
 )
+from jflows_md.bundle_build import write_bundle  # noqa: E402
+from jflows_md.bundle_build.builder import build_coordinate_spec  # noqa: E402
 from jflows_md.core.domain import Mixed_Domain  # noqa: E402
 from jflows_md.train import train_forward_KLX_G, train_forward_KLXX_G  # noqa: E402
 
 
 def main() -> None:
+    coordinate_builder = inspect.signature(build_coordinate_spec).parameters
+    assert tuple(coordinate_builder) == (
+        "system_spec",
+        "positions_nm",
+        "bonds",
+        "target",
+        "zmatrix",
+        "fixed_stereocenters",
+        "signed_volume_diagnostics",
+    )
+    assert coordinate_builder["target"].default is None
+    for name in tuple(coordinate_builder)[3:]:
+        assert coordinate_builder[name].kind is inspect.Parameter.KEYWORD_ONLY
+
+    bundle_builder = inspect.signature(write_bundle).parameters
+    assert tuple(bundle_builder) == (
+        "output",
+        "name",
+        "target",
+        "prmtop_path",
+        "coordinate_path",
+        "model",
+        "canonical_smiles",
+        "expected_formula",
+        "expected_charge",
+        "minimize",
+        "zmatrix",
+        "fixed_stereocenters",
+        "signed_volume_diagnostics",
+    )
+    assert bundle_builder["zmatrix"].default is None
+    assert bundle_builder["fixed_stereocenters"].default == ()
+    assert bundle_builder["signed_volume_diagnostics"].default is None
+    for name in tuple(bundle_builder)[1:]:
+        assert bundle_builder[name].kind is inspect.Parameter.KEYWORD_ONLY
+
     for trainer in (train_forward_KLX_G, train_forward_KLXX_G):
         parameters = inspect.signature(trainer).parameters
         assert parameters["initialize_from_identity"].default is False

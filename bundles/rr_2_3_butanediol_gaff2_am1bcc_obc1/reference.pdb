@@ -1,0 +1,35 @@
+REMARK   1 CREATED WITH OPENMM 8.5.2, 2026-07-22
+HETATM    1  O1  MOL 1   1      -0.840   1.308   0.687  1.00  0.00           O  
+HETATM    2  O2  MOL 1   1       0.861  -0.922   0.934  1.00  0.00           O  
+HETATM    3  C1  MOL 1   1      -0.689   0.416  -0.423  1.00  0.00           C  
+HETATM    4  C2  MOL 1   1       0.702  -0.284  -0.343  1.00  0.00           C  
+HETATM    5  C3  MOL 1   1      -1.867  -0.576  -0.418  1.00  0.00           C  
+HETATM    6  C4  MOL 1   1       1.881   0.685  -0.556  1.00  0.00           C  
+HETATM    7  H1  MOL 1   1      -0.733   0.981  -1.364  1.00  0.00           H  
+HETATM    8  H2  MOL 1   1       0.742  -1.037  -1.143  1.00  0.00           H  
+HETATM    9  H3  MOL 1   1      -1.891  -1.161   0.509  1.00  0.00           H  
+HETATM   10  H4  MOL 1   1      -1.784  -1.273  -1.260  1.00  0.00           H  
+HETATM   11  H5  MOL 1   1      -2.820  -0.042  -0.512  1.00  0.00           H  
+HETATM   12  H6  MOL 1   1       1.788   1.193  -1.523  1.00  0.00           H  
+HETATM   13  H7  MOL 1   1       1.915   1.449   0.230  1.00  0.00           H  
+HETATM   14  H8  MOL 1   1       2.834   0.143  -0.549  1.00  0.00           H  
+HETATM   15  H9  MOL 1   1      -0.371   0.862   1.428  1.00  0.00           H  
+HETATM   16  H10 MOL 1   1       1.704  -1.424   0.903  1.00  0.00           H  
+TER      17      MOL 1   1
+CONECT    1   15    3
+CONECT    2   16    4
+CONECT    3    7    1    4    5
+CONECT    4    8    2    3    6
+CONECT    5    9   10   11    3
+CONECT    6   12   13   14    4
+CONECT    7    3
+CONECT    8    4
+CONECT    9    5
+CONECT   10    5
+CONECT   11    5
+CONECT   12    6
+CONECT   13    6
+CONECT   14    6
+CONECT   15    1
+CONECT   16    2
+END

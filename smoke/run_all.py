@@ -28,6 +28,7 @@ TESTS = (
     "test_molecular_potential.py",
     "test_regularization.py",
     "test_openmm.py",
+    "test_stereochemistry.py",
     "test_support_and_utils.py",
     "test_float32_glycerol_compile.py",
 )

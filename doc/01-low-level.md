@@ -95,10 +95,24 @@ bundle/
 
 </div>
 
-The source checkout contains `adp_ff96_obc1`,
-`glycerol_gaff2_am1bcc_obc1`, and
-`diethanolamine_gaff2_am1bcc_obc1`. Installed wheels contain code only, so a
-wheel user downloads or prepares bundle data separately. Use
+The source checkout contains seven audited targets:
+
+| Bundle | Atoms / dimension | Mixed domain | Fixed centers |
+|---|---:|---|---:|
+| `adp_ff96_obc1` | 22 / 60 | `R^42 x T^18` | 1 |
+| `glycerol_gaff2_am1bcc_obc1` | 14 / 36 | `R^25 x T^11` | 0 |
+| `diethanolamine_gaff2_am1bcc_obc1` | 18 / 48 | `R^33 x T^15` | 0 |
+| `nma_ff96_obc1` | 12 / 30 | `R^21 x T^9` | 0 |
+| `s_2_butanol_gaff2_am1bcc_obc1` | 15 / 39 | `R^28 x T^11` | 1 |
+| `rr_2_3_butanediol_gaff2_am1bcc_obc1` | 16 / 42 | `R^31 x T^11` | 2 |
+| `cyclohexane_gaff2_am1bcc_obc1` | 18 / 48 | `R^33 x T^15` | 0 |
+
+The ff96 targets are ADP and NMA; the other five use GAFF2/AM1-BCC. All use
+OBC1/ACE, `NoCutoff`, and no constraints. The four candidate manifests pin
+AmberTools 26.0.0 and structure/parameter provenance: the alcohol `parmchk2`
+files are empty, while cyclohexane records zero-penalty `c6` transfers from
+the GAFF2 `c3` types. Installed wheels contain code only, so a wheel user
+downloads or prepares bundle data separately. Use
 `available_bundles(root)` to list selectable directory names, then pass one of
 those names and the same `root` to `Molecular_Bundle.load`,
 `Molecular_Potential.from_bundle`, or `OpenMM_Potential.from_bundle`.
@@ -129,6 +143,85 @@ delta = domain.displacement(q1, q0)
 
 Treat the concrete domain type as an opaque public value obtained from the
 target. Application code should not import `jflows_md.core.domain`.
+
+### Fixed stereochemical components
+
+A coordinate-schema-v3 bundle may replace any number of selected periodic
+torsions by Euclidean half-chart coordinates
+
+```text
+tau_i = s_i pi sigmoid(eta_i),  s_i in {-1, +1}.
+```
+
+Its `fixed_stereocenters` list records a unique label, the selected Z-matrix
+torsion, its allowed sign, four signed-volume atoms, and the allowed volume
+sign for each center. `target.support_mask(x)` is the conjunction of those
+signed-volume tests. An empty list leaves molecular support unrestricted.
+`signed_volume_diagnostics` is separate metadata and never restricts support.
+
+New bundle construction requires this choice explicitly; it does not infer
+stereochemistry from a target name or molecular graph. The narrow
+backward-compatibility exception is a target-only call for `adp`, `glycerol`,
+or `diethanolamine` with every new coordinate option at its default; that call
+reproduces the historical schema-v2 coordinate dictionary exactly. Any
+non-default coordinate option selects the explicit schema-v3 route. Pass the
+Z-matrix placement and every fixed center to `write_bundle`:
+
+```python
+from jflows_md.bundle_build import write_bundle
+
+write_bundle(
+    output,
+    name=name,
+    target=target_name,
+    prmtop_path=prmtop,
+    coordinate_path=coordinates,
+    model=model,
+    canonical_smiles=smiles,
+    expected_formula=formula,
+    expected_charge=charge,
+    minimize=False,
+    zmatrix={
+        "root": 6,
+        "prefix": (6, 8, 14, 10),
+        "overrides": {
+            8: (6, -1, -1),
+            14: (8, 6, -1),
+            10: (8, 14, 6),
+        },
+    },
+    fixed_stereocenters=(
+        {
+            "label": "alanine_ca_L",
+            "torsion_index": 0,
+            "atoms": (8, 6, 14, 10),
+            "configuration": "S",
+            "cip_priority_atoms": (6, 14, 10, 9),
+        },
+    ),
+)
+```
+
+The builder checks that the selected torsion geometrically represents the
+listed center, that its three listed substituents are bonded to that center,
+and that the reference is away from chart boundaries. If `configuration` and
+`cip_priority_atoms` are supplied, the four substituents must be listed from
+highest to lowest audited CIP priority; construction computes the reference
+handedness and rejects an R/S mismatch. The builder does not infer CIP
+priorities from the topology. It derives the chart torsion and signed-volume
+signs from the accepted reference configuration. These restrictions change
+only the internal-coordinate support and Jacobian; the Amber/OBC force-field
+arrays and Cartesian physical energy are unchanged.
+
+The curated NMA bundle leaves the ACE-C-N-C torsion periodic, so both cis and
+trans regions remain in support. The curated cyclohexane bundle has no fixed
+center: its ring-closing force-field bond is retained while chair inversion
+remains accessible. These policies are target-specific and do not imply
+automatic stereochemistry or ring-state inference for arbitrary molecules.
+
+Schema-v2 bundles remain readable. Their zero- or one-center singleton fields
+are normalized to the same runtime representation, so existing achiral and
+ADP bundles require no migration.
 
 ## Molecular source
 
@@ -491,5 +584,6 @@ passed to both native samplers.
   temperature behavior.
 - `smoke/test_regularization.py`: `(e,r)` equations.
 - `smoke/test_mixed_nsf.py`: mixed flow inversion, Jacobians, and seams.
+- `smoke/test_stereochemistry.py`: legacy and multi-center coordinate support.
 - `smoke/test_support_and_utils.py`: mixed MALA, SMC, AIS, QT, and support.
 - `smoke/test_openmm.py`: JAX/OpenMM parity and both native samplers.

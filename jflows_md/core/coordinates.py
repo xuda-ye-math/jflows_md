@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+import operator
 
 import equinox as eqx
 import jax
@@ -26,14 +27,117 @@ def signed_volume(
     return jnp.sum(a * jnp.cross(b, d), axis=-1)
 
 
+def _integer(value, *, name: str) -> int:
+    try:
+        result = operator.index(value)
+    except TypeError as exc:
+        raise ValueError(f"{name} must be an integer, got {value!r}") from exc
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer, got {value!r}")
+    return result
+
+
+def _atom_quadruple(value, *, name: str) -> tuple[int, int, int, int]:
+    try:
+        atoms = tuple(
+            _integer(atom, name=f"{name}[{position}]")
+            for position, atom in enumerate(value)
+        )
+    except TypeError as exc:
+        raise ValueError(f"{name} must contain four atom indices") from exc
+    if len(atoms) != 4:
+        raise ValueError(f"{name} must contain four atom indices")
+    return atoms
+
+
+def _normalize_fixed_stereocenters(
+    spec: Mapping,
+) -> tuple[tuple[str, int, int, tuple[int, int, int, int], int], ...]:
+    """Normalize the schema-2 singleton and schema-3 explicit list."""
+
+    legacy_keys = {
+        "chiral_torsion_index",
+        "chiral_torsion_sign",
+        "chirality_atoms",
+        "chirality_sign",
+    }
+    if "fixed_stereocenters" in spec:
+        if legacy_keys & spec.keys():
+            raise ValueError(
+                "coordinate spec cannot mix fixed_stereocenters with legacy "
+                "singleton chirality fields"
+            )
+        raw = spec["fixed_stereocenters"]
+        if isinstance(raw, (str, bytes)) or not isinstance(raw, Sequence):
+            raise ValueError("fixed_stereocenters must be a sequence")
+        result = []
+        for position, item in enumerate(raw):
+            if not isinstance(item, Mapping):
+                raise ValueError(
+                    f"fixed_stereocenters[{position}] must be a mapping"
+                )
+            label = str(item.get("label", f"stereocenter_{position}"))
+            if not label:
+                raise ValueError(
+                    f"fixed_stereocenters[{position}].label must be nonempty"
+            )
+            try:
+                torsion_index = _integer(
+                    item["torsion_index"],
+                    name=f"fixed_stereocenters[{position}].torsion_index",
+                )
+                torsion_sign = _integer(
+                    item["torsion_sign"],
+                    name=f"fixed_stereocenters[{position}].torsion_sign",
+                )
+                volume_sign = _integer(
+                    item["volume_sign"],
+                    name=f"fixed_stereocenters[{position}].volume_sign",
+                )
+                atoms = _atom_quadruple(
+                    item["atoms"],
+                    name=f"fixed_stereocenters[{position}].atoms",
+                )
+            except KeyError as exc:
+                raise ValueError(
+                    f"fixed_stereocenters[{position}] is missing {exc.args[0]!r}"
+                ) from exc
+            result.append(
+                (label, torsion_index, torsion_sign, atoms, volume_sign)
+            )
+        return tuple(result)
+
+    torsion_index = _integer(
+        spec.get("chiral_torsion_index", -1), name="chiral_torsion_index"
+    )
+    torsion_sign = _integer(
+        spec.get("chiral_torsion_sign", 0), name="chiral_torsion_sign"
+    )
+    atoms = _atom_quadruple(
+        spec.get("chirality_atoms", (-1, -1, -1, -1)),
+        name="chirality_atoms",
+    )
+    volume_sign = _integer(
+        spec.get("chirality_sign", 0), name="chirality_sign"
+    )
+    if torsion_index < 0:
+        if torsion_sign != 0 or volume_sign != 0:
+            raise ValueError(
+                "unconstrained legacy coordinates require zero chirality signs"
+            )
+        return ()
+    return (("legacy", torsion_index, torsion_sign, atoms, volume_sign),)
+
+
 class Internal_Coordinates(eqx.Module):
     """Almost-everywhere BAT chart on ``R^p x T^q``.
 
     Bonds use offset/scaled log coordinates, angles use offset/scaled logits
     of ``angle/pi``, and ordinary torsions remain periodic. An optional chiral
-    torsion is replaced by ``tau = sign*pi*sigmoid(eta)``. Coordinate specs
-    use the standard Cartesian configurational measure after quotienting
-    rigid translations and rotations.
+    torsion is replaced by ``tau = sign*pi*sigmoid(eta)``. Any number of
+    explicitly configured torsions may define fixed stereochemical
+    half-charts. Coordinate specs use the standard Cartesian configurational
+    measure after quotienting rigid translations and rotations.
     """
 
     order: tuple[int, ...] = eqx.field(static=True)
@@ -43,6 +147,15 @@ class Internal_Coordinates(eqx.Module):
     n_angles: int = eqx.field(static=True)
     n_torsions: int = eqx.field(static=True)
     jacobian_measure: str = eqx.field(static=True)
+    fixed_stereocenter_labels: tuple[str, ...] = eqx.field(static=True)
+    stereocenter_torsion_indices: tuple[int, ...] = eqx.field(static=True)
+    stereocenter_torsion_signs: tuple[int, ...] = eqx.field(static=True)
+    stereocenter_atoms: tuple[tuple[int, int, int, int], ...] = eqx.field(
+        static=True
+    )
+    stereocenter_volume_signs: tuple[int, ...] = eqx.field(static=True)
+    n_fixed_stereocenters: int = eqx.field(static=True)
+    # Schema-2 singleton aliases are retained for existing diagnostics.
     chiral_torsion_index: int = eqx.field(static=True)
     chiral_torsion_sign: int = eqx.field(static=True)
     chirality_atoms: tuple[int, int, int, int] = eqx.field(static=True)
@@ -64,19 +177,135 @@ class Internal_Coordinates(eqx.Module):
     angle_scale: Array
 
     def __init__(self, spec: Mapping):
-        self.order = tuple(map(int, spec["order"]))
-        self.refs = tuple(tuple(map(int, row)) for row in spec["refs"])
+        schema_version = _integer(
+            spec.get("schema_version", 2), name="schema_version"
+        )
+        if schema_version not in (2, 3):
+            raise ValueError(
+                f"unsupported coordinate schema_version: {schema_version}"
+            )
+        expected_chart = (
+            f"log-bond_logit-angle_quotient_BAT_v{schema_version}"
+        )
+        if spec.get("chart") != expected_chart:
+            raise ValueError(
+                f"coordinate chart must be {expected_chart!r}, "
+                f"got {spec.get('chart')!r}"
+            )
+        self.order = tuple(
+            _integer(atom, name=f"order[{position}]")
+            for position, atom in enumerate(spec["order"])
+        )
+        self.refs = tuple(
+            tuple(
+                _integer(reference, name=f"refs[{row}][{column}]")
+                for column, reference in enumerate(values)
+            )
+            for row, values in enumerate(spec["refs"])
+        )
         self.n_atoms = len(self.order)
+        if self.n_atoms < 3 or sorted(self.order) != list(range(self.n_atoms)):
+            raise ValueError("coordinate order must be a permutation of atom indices")
+        if len(self.refs) != self.n_atoms or any(
+            len(row) != 3 for row in self.refs
+        ):
+            raise ValueError("coordinate refs must contain one triple per atom")
+        placed = set()
+        for placement, (atom, row) in enumerate(
+            zip(self.order, self.refs, strict=True)
+        ):
+            required = row[: min(placement, 3)]
+            if len(set(required)) != len(required) or any(
+                reference not in placed for reference in required
+            ):
+                raise ValueError(
+                    f"invalid coordinate refs at placement {placement}: {row}"
+                )
+            placed.add(atom)
         self.n_bonds = self.n_atoms - 1
         self.n_angles = self.n_atoms - 2
         self.n_torsions = self.n_atoms - 3
         self.jacobian_measure = str(spec.get("jacobian_measure"))
-        self.chiral_torsion_index = int(spec.get("chiral_torsion_index", -1))
-        self.chiral_torsion_sign = int(spec.get("chiral_torsion_sign", 0))
-        self.chirality_atoms = tuple(map(int, spec.get("chirality_atoms", (-1, -1, -1, -1))))
-        self.chirality_sign = int(spec.get("chirality_sign", 0))
-        expected_periodic = self.n_torsions - int(self.chiral_torsion_index >= 0)
-        expected_euclidean = self.n_bonds + self.n_angles + int(self.chiral_torsion_index >= 0)
+        if self.jacobian_measure != "rigid_motion_quotient_v1":
+            raise ValueError(
+                f"unsupported coordinate Jacobian measure: {self.jacobian_measure}"
+            )
+
+        fixed = _normalize_fixed_stereocenters(spec)
+        labels = tuple(item[0] for item in fixed)
+        torsion_indices = tuple(item[1] for item in fixed)
+        torsion_signs = tuple(item[2] for item in fixed)
+        atoms = tuple(item[3] for item in fixed)
+        volume_signs = tuple(item[4] for item in fixed)
+        if len(set(labels)) != len(labels):
+            raise ValueError("fixed stereocenter labels must be unique")
+        if len(set(torsion_indices)) != len(torsion_indices):
+            raise ValueError("fixed stereocenter torsion indices must be unique")
+        if len({item[0] for item in atoms}) != len(atoms):
+            raise ValueError("fixed stereocenter center atoms must be unique")
+        if any(
+            index < 0 or index >= self.n_torsions
+            for index in torsion_indices
+        ):
+            raise ValueError("fixed stereocenter torsion index is out of range")
+        if any(sign not in (-1, 1) for sign in torsion_signs):
+            raise ValueError("fixed stereocenter torsion signs must be -1 or 1")
+        if any(sign not in (-1, 1) for sign in volume_signs):
+            raise ValueError("fixed stereocenter volume signs must be -1 or 1")
+        for position, (torsion_index, center_atoms) in enumerate(
+            zip(torsion_indices, atoms, strict=True)
+        ):
+            if len(set(center_atoms)) != 4 or any(
+                atom < 0 or atom >= self.n_atoms for atom in center_atoms
+            ):
+                raise ValueError(
+                    f"fixed_stereocenters[{position}].atoms must contain four "
+                    "distinct in-range indices"
+                )
+            placement = torsion_index + 3
+            placed_atom = self.order[placement]
+            r1, r2, r3 = self.refs[placement]
+            if center_atoms[0] != r1 or set(center_atoms[1:]) != {
+                r2,
+                r3,
+                placed_atom,
+            }:
+                raise ValueError(
+                    f"fixed_stereocenters[{position}] is not represented by "
+                    "its selected Z-matrix torsion"
+                )
+
+        self.fixed_stereocenter_labels = labels
+        self.stereocenter_torsion_indices = torsion_indices
+        self.stereocenter_torsion_signs = torsion_signs
+        self.stereocenter_atoms = atoms
+        self.stereocenter_volume_signs = volume_signs
+        self.n_fixed_stereocenters = len(fixed)
+        if self.n_fixed_stereocenters == 1:
+            self.chiral_torsion_index = torsion_indices[0]
+            self.chiral_torsion_sign = torsion_signs[0]
+            self.chirality_atoms = atoms[0]
+            self.chirality_sign = volume_signs[0]
+        else:
+            self.chiral_torsion_index = -1
+            self.chiral_torsion_sign = 0
+            self.chirality_atoms = (-1, -1, -1, -1)
+            self.chirality_sign = 0
+
+        expected_periodic = self.n_torsions - self.n_fixed_stereocenters
+        expected_euclidean = (
+            self.n_bonds + self.n_angles + self.n_fixed_stereocenters
+        )
+        expected_dimension = 3 * self.n_atoms - 6
+        for name, expected in (
+            ("dimension", expected_dimension),
+            ("euclidean_dim", expected_euclidean),
+            ("periodic_dim", expected_periodic),
+        ):
+            if name in spec and _integer(spec[name], name=name) != expected:
+                raise ValueError(
+                    f"coordinate {name} must be {expected}, got {spec[name]}"
+                )
         self.domain = Mixed_Domain(expected_euclidean, expected_periodic)
 
         order = self.order
@@ -91,13 +320,40 @@ class Internal_Coordinates(eqx.Module):
         self.torsion_ref2 = jnp.asarray([refs[p][1] for p in range(3, self.n_atoms)], dtype=jnp.int32)
         self.torsion_ref3 = jnp.asarray([refs[p][2] for p in range(3, self.n_atoms)], dtype=jnp.int32)
         self.ordinary_torsion_indices = jnp.asarray(
-            [i for i in range(self.n_torsions) if i != self.chiral_torsion_index],
+            [
+                index
+                for index in range(self.n_torsions)
+                if index not in self.stereocenter_torsion_indices
+            ],
             dtype=jnp.int32,
         )
         self.bond_offset = jnp.asarray(spec["bond_log_offset"])
         self.bond_scale = jnp.asarray(spec["bond_log_scale"])
         self.angle_offset = jnp.asarray(spec["angle_logit_offset"])
         self.angle_scale = jnp.asarray(spec["angle_logit_scale"])
+        for name, value, expected in (
+            ("bond_log_offset", self.bond_offset, self.n_bonds),
+            ("bond_log_scale", self.bond_scale, self.n_bonds),
+            ("angle_logit_offset", self.angle_offset, self.n_angles),
+            ("angle_logit_scale", self.angle_scale, self.n_angles),
+        ):
+            if value.shape != (expected,):
+                raise ValueError(
+                    f"coordinate {name} must have shape {(expected,)}, "
+                    f"got {value.shape}"
+                )
+        if not bool(jnp.all(jnp.isfinite(self.bond_offset))):
+            raise ValueError("bond_log_offset must be finite")
+        if not bool(
+            jnp.all(jnp.isfinite(self.bond_scale) & (self.bond_scale > 0.0))
+        ):
+            raise ValueError("bond_log_scale must be finite and strictly positive")
+        if not bool(jnp.all(jnp.isfinite(self.angle_offset))):
+            raise ValueError("angle_logit_offset must be finite")
+        if not bool(
+            jnp.all(jnp.isfinite(self.angle_scale) & (self.angle_scale > 0.0))
+        ):
+            raise ValueError("angle_logit_scale must be finite and strictly positive")
 
     @staticmethod
     def _dihedral4(a: Array, b: Array, c: Array, d: Array) -> Array:
@@ -138,21 +394,26 @@ class Internal_Coordinates(eqx.Module):
         )
         angles = jnp.pi * angle_fraction
         periodic = q[:, self.domain.euclidean_dim :]
-        if self.chiral_torsion_index < 0:
+        if self.n_fixed_stereocenters == 0:
             torsions = periodic
             chiral_fraction = jnp.empty((q.shape[0], 0), dtype=q.dtype)
             chiral_eta = jnp.empty((q.shape[0], 0), dtype=q.dtype)
         else:
-            eta = q[:, self.n_bonds + self.n_angles]
-            chiral_eta = eta[:, None]
+            start = self.n_bonds + self.n_angles
+            chiral_eta = q[:, start : start + self.n_fixed_stereocenters]
             chiral_fraction = jnp.clip(
-                jax.nn.sigmoid(eta), epsilon, 1.0 - epsilon
-            )[:, None]
+                jax.nn.sigmoid(chiral_eta), epsilon, 1.0 - epsilon
+            )
             pieces = []
             ordinary = 0
             for index in range(self.n_torsions):
-                if index == self.chiral_torsion_index:
-                    pieces.append(self.chiral_torsion_sign * jnp.pi * chiral_fraction[:, 0])
+                if index in self.stereocenter_torsion_indices:
+                    position = self.stereocenter_torsion_indices.index(index)
+                    pieces.append(
+                        self.stereocenter_torsion_signs[position]
+                        * jnp.pi
+                        * chiral_fraction[:, position]
+                    )
                 else:
                     pieces.append(periodic[:, ordinary])
                     ordinary += 1
@@ -177,13 +438,20 @@ class Internal_Coordinates(eqx.Module):
             + jax.nn.log_sigmoid(-angle_logit),
             axis=-1,
         )
-        if self.chiral_torsion_index >= 0:
+        if self.n_fixed_stereocenters == 1:
             eta = chiral_eta[:, 0]
             chart = (
                 chart
                 + jnp.log(jnp.pi)
                 + jax.nn.log_sigmoid(eta)
                 + jax.nn.log_sigmoid(-eta)
+            )
+        elif self.n_fixed_stereocenters > 1:
+            chart = chart + jnp.sum(
+                jnp.log(jnp.pi)
+                + jax.nn.log_sigmoid(chiral_eta)
+                + jax.nn.log_sigmoid(-chiral_eta),
+                axis=-1,
             )
         return bat + chart
 
@@ -196,20 +464,43 @@ class Internal_Coordinates(eqx.Module):
         fraction = jnp.clip(angles / jnp.pi, epsilon, 1.0 - epsilon)
         angle_q = (_logit(fraction) - self.angle_offset) / self.angle_scale
         angle_logit = self.angle_offset + self.angle_scale * angle_q
-        if self.chiral_torsion_index < 0:
+        if self.n_fixed_stereocenters == 0:
             q = jnp.concatenate((bond_q, angle_q, torsions), axis=-1)
             chiral_eta = jnp.empty((x.shape[0], 0), dtype=x.dtype)
-        else:
-            tau = torsions[:, self.chiral_torsion_index]
+        elif self.n_fixed_stereocenters == 1:
+            tau = torsions[:, self.stereocenter_torsion_indices[0]]
             chiral_fraction = jnp.clip(
-                self.chiral_torsion_sign * tau / jnp.pi,
+                self.stereocenter_torsion_signs[0] * tau / jnp.pi,
                 epsilon,
                 1.0 - epsilon,
             )
             eta = _logit(chiral_fraction)
             ordinary = torsions[:, self.ordinary_torsion_indices]
-            q = jnp.concatenate((bond_q, angle_q, eta[:, None], ordinary), axis=-1)
+            q = jnp.concatenate(
+                (bond_q, angle_q, eta[:, None], ordinary), axis=-1
+            )
             chiral_eta = eta[:, None]
+        else:
+            tau = jnp.stack(
+                [
+                    torsions[:, index]
+                    for index in self.stereocenter_torsion_indices
+                ],
+                axis=-1,
+            )
+            signs = jnp.asarray(
+                self.stereocenter_torsion_signs, dtype=x.dtype
+            )
+            chiral_fraction = jnp.clip(
+                signs * tau / jnp.pi,
+                epsilon,
+                1.0 - epsilon,
+            )
+            chiral_eta = _logit(chiral_fraction)
+            ordinary = torsions[:, self.ordinary_torsion_indices]
+            q = jnp.concatenate(
+                (bond_q, angle_q, chiral_eta, ordinary), axis=-1
+            )
         logdet = self._logdet(bonds, angle_logit, chiral_eta)
         return q, -logdet
 
@@ -259,8 +550,15 @@ class Internal_Coordinates(eqx.Module):
         return x, self._logdet(bonds, angle_logit, chiral_eta)
 
     def support_mask(self, x: Array) -> Array:
-        if self.chirality_sign == 0:
+        if self.n_fixed_stereocenters == 0:
             return jnp.ones(x.shape[:-2], dtype=bool)
-        center, first, second, third = self.chirality_atoms
-        volume = signed_volume(x, center, first, second, third)
-        return self.chirality_sign * volume > 0.0
+        checks = []
+        for atoms, sign in zip(
+            self.stereocenter_atoms,
+            self.stereocenter_volume_signs,
+            strict=True,
+        ):
+            center, first, second, third = atoms
+            volume = signed_volume(x, center, first, second, third)
+            checks.append(sign * volume > 0.0)
+        return jnp.all(jnp.stack(checks, axis=-1), axis=-1)

@@ -42,10 +42,11 @@ opt-in compilation benchmark is intentionally excluded.
 <tr><td><code>test_boltzmann_integration.py</code></td><td>actual computed-stage interruption and resumed-run equivalence</td></tr>
 <tr><td><code>test_mixed_training.py</code></td><td>direct KLX/KLXX plus bounded adaptive Boltzmann execution</td></tr>
 <tr><td><code>test_sharpening_gate.py</code></td><td>flow ESS and sharpening ESS gates with adaptive shrinking</td></tr>
-<tr><td><code>test_molecular_potential.py</code></td><td>JAX energies, forces, quotient Jacobian, temperature scaling, and three-bundle parity</td></tr>
+<tr><td><code>test_molecular_potential.py</code></td><td>JAX energies, forces, quotient Jacobian, temperature scaling, and seven-bundle parity</td></tr>
 <tr><td><code>test_regularization.py</code></td><td>the exact <code>(e,r)</code> energy map and pair-floor derivatives</td></tr>
 <tr><td><code>test_openmm.py</code></td><td>JAX/OpenMM energy and regularized-force parity plus native Langevin and parallel tempering</td></tr>
-<tr><td><code>test_support_and_utils.py</code></td><td>stereochemical support, mixed MALA, SMC, AIS, and quench-and-temper</td></tr>
+<tr><td><code>test_stereochemistry.py</code></td><td>schema-2 compatibility; NMA cis/trans, cyclohexane ring, one-center S-butanol, two-center RR-butanediol, CIP rejection, support, and flow checks</td></tr>
+<tr><td><code>test_support_and_utils.py</code></td><td>seven-target stereochemical support, mixed MALA, SMC, AIS, and quench-and-temper</td></tr>
 <tr><td><code>test_float32_glycerol_compile.py</code></td><td>bounded real-glycerol energy, flow, and trainer compilation</td></tr>
 </tbody>
 </table>
@@ -64,6 +65,7 @@ test_molecular_potential.py
 test_regularization.py
 test_mixed_nsf.py
 test_edge_cases.py
+test_stereochemistry.py
 test_support_and_utils.py
 test_jflows_md_chunking.py
 test_openmm.py
@@ -110,7 +112,7 @@ python smoke/test_openmm.py
 
 The OpenMM smoke explicitly selects the Reference platform. It checks:
 
-- physical-energy parity for all three shipped bundles;
+- physical-energy parity for all seven shipped bundles;
 - regularized energy and force parity against `Molecular_Potential`;
 - native Langevin on physical and regularized systems; and
 - native parallel tempering on physical and regularized systems.

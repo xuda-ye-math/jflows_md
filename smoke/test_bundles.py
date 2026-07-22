@@ -16,6 +16,16 @@ EXPECTED = {
     "adp_ff96_obc1": ("C6H12N2O2", 22, 60, 42, 18),
     "glycerol_gaff2_am1bcc_obc1": ("C3H8O3", 14, 36, 25, 11),
     "diethanolamine_gaff2_am1bcc_obc1": ("C4H11NO2", 18, 48, 33, 15),
+    "nma_ff96_obc1": ("C3H7NO", 12, 30, 21, 9),
+    "s_2_butanol_gaff2_am1bcc_obc1": ("C4H10O", 15, 39, 28, 11),
+    "rr_2_3_butanediol_gaff2_am1bcc_obc1": (
+        "C4H10O2",
+        16,
+        42,
+        31,
+        11,
+    ),
+    "cyclohexane_gaff2_am1bcc_obc1": ("C6H12", 18, 48, 33, 15),
 }
 EXPECTED_FILES = {
     "coordinates.json",

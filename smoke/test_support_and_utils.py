@@ -30,6 +30,10 @@ NAMES = (
     "adp_ff96_obc1",
     "glycerol_gaff2_am1bcc_obc1",
     "diethanolamine_gaff2_am1bcc_obc1",
+    "nma_ff96_obc1",
+    "s_2_butanol_gaff2_am1bcc_obc1",
+    "rr_2_3_butanediol_gaff2_am1bcc_obc1",
+    "cyclohexane_gaff2_am1bcc_obc1",
 )
 
 
@@ -62,14 +66,27 @@ def main() -> None:
         source = potential.source()
         q = source.samples(jax.random.key(100 + index), 512)
         x = potential.cartesian(q)
-        diagnostic_atoms = bundle.coordinates["diagnostic_chirality_atoms"]
-        volume = signed_volume(x, *diagnostic_atoms)
-        if name == "adp_ff96_obc1":
-            assert bool(jnp.all(volume > 0))
-            assert bool(jnp.all(potential.support_mask(x)))
-        else:
+        diagnostics = bundle.coordinates.get("signed_volume_diagnostics", ())
+        if not diagnostics and "diagnostic_chirality_atoms" in bundle.coordinates:
+            diagnostics = (
+                {"atoms": bundle.coordinates["diagnostic_chirality_atoms"]},
+            )
+        if potential.coordinates.n_fixed_stereocenters:
+            fixed_entries = bundle.coordinates.get("fixed_stereocenters")
+            if fixed_entries is None:
+                fixed_entries = (
+                    {
+                        "atoms": bundle.coordinates["chirality_atoms"],
+                        "volume_sign": bundle.coordinates["chirality_sign"],
+                    },
+                )
+            for fixed in fixed_entries:
+                volume = signed_volume(x, *fixed["atoms"])
+                assert bool(jnp.all(fixed["volume_sign"] * volume > 0.0))
+        elif diagnostics:
+            volume = signed_volume(x, *diagnostics[0]["atoms"])
             assert bool(jnp.any(volume > 0) & jnp.any(volume < 0))
-            assert bool(jnp.all(potential.support_mask(x)))
+        assert bool(jnp.all(potential.support_mask(x)))
 
         reference = potential.cartesian(potential.reference_internal()[None])
         mirrored = reference.at[..., 0].multiply(-1.0)
@@ -82,7 +99,7 @@ def main() -> None:
             )
         )
         assert parity_error < 1e-4, (name, parity_error)
-        if name == "adp_ff96_obc1":
+        if potential.coordinates.n_fixed_stereocenters:
             assert not bool(potential.support_mask(mirrored)[0])
         else:
             assert bool(potential.support_mask(mirrored)[0])

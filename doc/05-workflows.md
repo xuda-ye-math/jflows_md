@@ -392,6 +392,21 @@ extracts the static JAX force-field arrays, defines the internal-coordinate
 chart, and stores independent OpenMM validation frames. Never overwrite an
 active input bundle.
 
+Preset builds supply their coordinate configuration explicitly. The finite
+audited CLI keys are `adp`, `glycerol`, `diethanolamine`, `nma`,
+`s_2_butanol`, `rr_2_3_butanediol`, and `cyclohexane`. For another explicitly
+prepared molecule, call `jflows_md.bundle_build.write_bundle(...)` and pass
+any required `zmatrix`, `fixed_stereocenters`, and
+`signed_volume_diagnostics` values. The builder supports multiple fixed
+tetrahedral centers but deliberately does not infer them or their CIP
+priorities from topology. A chiral specification can include
+`configuration` plus a highest-to-lowest `cip_priority_atoms` tuple so a
+reference with the wrong requested R/S configuration is rejected; see the
+low-level fixed-stereochemistry contract. The only name-based behavior is the
+compatibility route for target-only `adp`, `glycerol`, and `diethanolamine`
+calls with all new coordinate options at their defaults; those reproduce
+their old schema-v2 coordinate dictionaries.
+
 ## Reproducibility checklist
 
 - Record the bundle path/name and manifest.

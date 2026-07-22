@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Pure-JAX energy, force, Jacobian, and API smoke tests for three molecules."""
+"""Pure-JAX energy, force, Jacobian, and API smoke tests for seven molecules."""
 
 from __future__ import annotations
 
@@ -27,6 +27,10 @@ EXPECTED = {
     "adp_ff96_obc1": (60, 42, 18),
     "glycerol_gaff2_am1bcc_obc1": (36, 25, 11),
     "diethanolamine_gaff2_am1bcc_obc1": (48, 33, 15),
+    "nma_ff96_obc1": (30, 21, 9),
+    "s_2_butanol_gaff2_am1bcc_obc1": (39, 28, 11),
+    "rr_2_3_butanediol_gaff2_am1bcc_obc1": (42, 31, 11),
+    "cyclohexane_gaff2_am1bcc_obc1": (48, 33, 15),
 }
 
 

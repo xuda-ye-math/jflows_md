@@ -309,10 +309,30 @@ system.xml
 validation.json
 ```
 
-A source checkout includes three named bundles: alanine dipeptide, glycerol,
-and diethanolamine. Wheels contain Python code only; bundle data must be
-downloaded or prepared separately. An installed user can search an external
-directory and select a bundle by name:
+A source checkout includes these seven audited named bundles:
+
+| CLI preset | Bundle | Model | Domain | Fixed centers |
+|---|---|---|---|---:|
+| `adp` | `adp_ff96_obc1` | ff96; OBC1/ACE | `R^42 x T^18` | 1 (L-Ala) |
+| `glycerol` | `glycerol_gaff2_am1bcc_obc1` | GAFF2/AM1-BCC; OBC1/ACE | `R^25 x T^11` | 0 |
+| `diethanolamine` | `diethanolamine_gaff2_am1bcc_obc1` | GAFF2/AM1-BCC; OBC1/ACE | `R^33 x T^15` | 0 |
+| `nma` | `nma_ff96_obc1` | ff96; OBC1/ACE | `R^21 x T^9` | 0 |
+| `s_2_butanol` | `s_2_butanol_gaff2_am1bcc_obc1` | GAFF2/AM1-BCC; OBC1/ACE | `R^28 x T^11` | 1 (S) |
+| `rr_2_3_butanediol` | `rr_2_3_butanediol_gaff2_am1bcc_obc1` | GAFF2/AM1-BCC; OBC1/ACE | `R^31 x T^11` | 2 (R,R) |
+| `cyclohexane` | `cyclohexane_gaff2_am1bcc_obc1` | GAFF2/AM1-BCC; OBC1/ACE | `R^33 x T^15` | 0 |
+
+NMA keeps its amide cis/trans coordinate periodic and unrestricted; the
+force field assigns its energetic preference. Cyclohexane likewise has no
+stereochemical support restriction, so ring conformations and chair inversion
+are not split into artificial components. The two alcohol presets restrict
+the chart to their named absolute configurations.
+Candidate manifests pin AmberTools 26.0.0 and their structure/parameter
+provenance. The two alcohol `parmchk2` files add no terms; cyclohexane records
+the zero-penalty transfer of its `c6` terms from the GAFF2 `c3` types.
+
+Wheels contain Python code only; bundle data must be downloaded or prepared
+separately. An installed user can search an external directory and select a
+bundle by name:
 
 ```python
 from jflows_md import Molecular_Bundle, available_bundles
@@ -366,13 +386,30 @@ python -m jflows_md.bundle_build \
 From a source checkout, the equivalent wrapper is
 `python -m bundles.build_molecular_bundles ...`.
 
+The command-line presets above carry explicit coordinate configurations.
+Programmatic `jflows_md.bundle_build.write_bundle(...)` calls may provide
+`zmatrix`, `fixed_stereocenters`, and `signed_volume_diagnostics` for any
+additional explicitly prepared molecule, but that low-level route is not a
+claim of curated target support. Multiple fixed tetrahedral centers use
+multiple half-chart torsions; no center is inferred from the molecule name.
+For named chiral presets, caller-supplied CIP-priority atom orders make bundle
+construction reject a reference with the wrong requested R/S configuration.
+Legacy schema-v2 achiral and single-center bundles remain runtime compatible.
+For source compatibility, a target-only builder call with all new coordinate
+options at their defaults still reproduces the historical schema-v2 defaults
+for `adp`, `glycerol`, and `diethanolamine`; any non-default coordinate option
+uses the new schema-v3 route.
+See `doc/01-low-level.md` for the configuration contract.
+
 ## Verification
 
 Run the complete local suite from the repository root only when the accelerator
 is available:
 
 ```bash
-XLA_PYTHON_CLIENT_PREALLOCATE=false python smoke/run_all.py
+PYTHONPATH=/path/to/jflows:/path/to/jflows_md \
+XLA_PYTHON_CLIENT_PREALLOCATE=false \
+python /path/to/jflows_md/smoke/run_all.py
 ```
 
 `smoke/benchmark_compile.py` is an opt-in compilation benchmark and is not part

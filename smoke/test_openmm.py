@@ -22,6 +22,10 @@ BUNDLES = (
     "adp_ff96_obc1",
     "glycerol_gaff2_am1bcc_obc1",
     "diethanolamine_gaff2_am1bcc_obc1",
+    "nma_ff96_obc1",
+    "s_2_butanol_gaff2_am1bcc_obc1",
+    "rr_2_3_butanediol_gaff2_am1bcc_obc1",
+    "cyclohexane_gaff2_am1bcc_obc1",
 )
 
 
