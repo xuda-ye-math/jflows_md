@@ -10,7 +10,8 @@ package:
 3. high-level adaptive Boltzmann generators.
 
 The live source is authoritative. Public JAX code should import from
-`jflows_md.system`, `jflows_md.source`, `jflows_md.potential`,
+the root `jflows_md.backend` report or from `jflows_md.system`,
+`jflows_md.source`, `jflows_md.potential`,
 `jflows_md.flow`, `jflows_md.utils`, `jflows_md.train`,
 `jflows_md.artifacts`, or `jflows_md.boltzmann`. Native OpenMM code should
 import from `jflows_md.openmm`. The `jflows_md.core` package is private.
@@ -36,6 +37,7 @@ usage patterns.
 ```text
 jflows_md
 ├── LOW LEVEL
+│   ├── backend               JAX/Equinox/OpenMM accelerator report
 │   ├── system
 │   │   ├── Molecular_Bundle
 │   │   └── available_bundles
@@ -163,4 +165,6 @@ os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
 OpenMM is optional for ordinary pure-JAX bundle use. Install the `openmm`
 extra for native OpenMM potentials and samplers, or `bundles` for the complete
-offline bundle-construction stack.
+offline bundle-construction stack. Accelerator plugins are separate: install
+either `jax[cuda12]` and `openmm[cuda12]`, or `jax[cuda13]` and
+`openmm[cuda13]`, explicitly.

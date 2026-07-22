@@ -1,6 +1,6 @@
 # jflows_md
 
-`jflows_md` 0.5.1 is the mixed-domain molecular companion to `jflows` 0.5.1.
+`jflows_md` 0.5.2 is the mixed-domain molecular companion to `jflows` 0.5.2.
 It supplies bundle-backed molecular potentials, flows on
 `R^p x T^q`, molecular KLX/KLXX training, sampling kernels, linear
 regularization sharpening, and complete-stage resume.
@@ -326,14 +326,35 @@ The same `root=` keyword is accepted by `Molecular_Potential.from_bundle` and
 `OpenMM_Potential.from_bundle`. `available_bundles()` returns an empty tuple
 when the requested directory is absent or contains no bundles.
 
-Install the runtime against `jflows` 0.5:
+Install matching JAX and OpenMM accelerator wheels separately. Choose one CUDA
+toolkit generation:
+
+```bash
+pip install "jax[cuda13]" "openmm[cuda13]"
+# or: pip install "jax[cuda12]" "openmm[cuda12]"
+```
+
+Installing a JAX CUDA extra does not install the OpenMM CUDA plugin, and the
+OpenMM extra does not install the JAX plugin. These extras select the
+independently packaged JAX and OpenMM CUDA wheels; they must use the same CUDA
+generation. Then install both projects:
 
 ```bash
 pip install -e /path/to/jflows
 pip install -e /path/to/jflows_md
 ```
 
-OpenMM-side construction is optional:
+Inspect the installed runtimes without creating a JAX client or OpenMM
+context:
+
+```python
+import jflows_md
+
+jflows_md.backend()
+```
+
+Base OpenMM-side construction is optional and CPU-capable; select a CUDA extra
+above when native GPU execution is required:
 
 ```bash
 pip install -e "/path/to/jflows_md[openmm]"

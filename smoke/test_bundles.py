@@ -1,9 +1,11 @@
 #!/usr/bin/env python
 """Host-only checks for the minimal molecular bundle contract."""
 
-import tempfile
-from pathlib import Path
+import io
 import shutil
+import tempfile
+from contextlib import redirect_stdout
+from pathlib import Path
 
 import jflows_md
 from jflows_md import Molecular_Bundle, available_bundles
@@ -25,6 +27,7 @@ EXPECTED_FILES = {
 }
 EXPECTED_PUBLIC = {
     "__version__",
+    "backend",
     "Mixed_Identity",
     "Mixed_NSF",
     "Molecular_Bundle",
@@ -45,8 +48,19 @@ EXPECTED_PUBLIC = {
 
 
 def main() -> None:
-    assert jflows_md.__version__ == "0.5.1"
+    assert jflows_md.__version__ == "0.5.2"
     assert set(jflows_md.__all__) == EXPECTED_PUBLIC
+    output = io.StringIO()
+    with redirect_stdout(output):
+        result = jflows_md.backend()
+    report = output.getvalue()
+    assert result is None
+    assert "JAX " in report
+    assert "Equinox " in report
+    assert "Selected backend:" in report
+    assert "Available backends:" in report
+    assert "OpenMM" in report
+    assert "OpenMM GPU backend:" in report
     assert set(available_bundles()) == set(EXPECTED)
     for name, (formula, atoms, dimension, euclidean, periodic) in EXPECTED.items():
         bundle = Molecular_Bundle.load(name)

@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
 from importlib import import_module
+from importlib.metadata import (
+    PackageNotFoundError as _PackageNotFoundError,
+    distributions as _distributions,
+    version as _package_version,
+)
+from shutil import which
 
 
 __all__ = [
     "__version__",
+    "backend",
     "Mixed_Identity",
     "Mixed_NSF",
     "Molecular_Bundle",
@@ -24,6 +33,59 @@ __all__ = [
     "train_forward_KLX_G",
     "train_forward_KLXX_G",
 ]
+
+
+def backend():
+    """Print the JAX and OpenMM accelerator configuration."""
+    from jflows import backend as jax_backend
+
+    jax_backend()
+
+    try:
+        openmm_version = _package_version("openmm")
+    except _PackageNotFoundError:
+        print("OpenMM: not installed")
+        print("OpenMM GPU backend: unavailable")
+        return
+
+    print(f"OpenMM {openmm_version}")
+    installed = {
+        item.metadata["Name"].lower().replace("_", "-").replace(".", "-"): item.version
+        for item in _distributions()
+        if item.metadata.get("Name")
+    }
+    cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES") not in ("", "-1")
+    cuda_available = cuda_visible and which("nvidia-smi") and subprocess.run(
+        ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    ).returncode == 0
+    hip_visible = os.environ.get("ROCR_VISIBLE_DEVICES") not in ("", "-1")
+    hip_available = hip_visible and which("rocm-smi") and subprocess.run(
+        ["rocm-smi", "--showproductname"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    ).returncode == 0
+
+    gpu = []
+    for name, plugin_version in sorted(installed.items()):
+        if name.startswith("openmm-cuda-"):
+            label = f"CUDA {name.removeprefix('openmm-cuda-')} ({plugin_version})"
+            available = cuda_available
+        elif name.startswith("openmm-hip-"):
+            label = f"HIP {name.removeprefix('openmm-hip-')} ({plugin_version})"
+            available = hip_available
+        else:
+            continue
+        if plugin_version != openmm_version:
+            state = f"version mismatch with OpenMM {openmm_version}"
+        elif available:
+            state = "available"
+        else:
+            state = "installed, accelerator unavailable"
+        gpu.append(f"{label} — {state}")
+
+    print(f"OpenMM GPU backend: {'; '.join(gpu) if gpu else 'unavailable'}")
 
 
 _EXPORTS = {

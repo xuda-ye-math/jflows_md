@@ -29,6 +29,27 @@ the clearest choice in reusable code. `OpenMM_Potential` and the native
 samplers intentionally live only under `jflows_md.openmm` so OpenMM stays an
 optional dependency.
 
+## Runtime backend report
+
+```python
+import jflows_md
+
+jflows_md.backend()
+```
+
+The report includes the client-free `jflows.backend()` output, the installed
+OpenMM version, and whether a version-matched OpenMM CUDA or HIP plugin has
+visible accelerator hardware. It inspects package and platform metadata only;
+it does not create a JAX backend client, load an OpenMM platform, or construct
+an OpenMM context.
+
+Typical output ends with:
+
+```text
+OpenMM 8.5.2
+OpenMM GPU backend: CUDA 13 (8.5.2) — available
+```
+
 ## Molecular bundles
 
 ```python

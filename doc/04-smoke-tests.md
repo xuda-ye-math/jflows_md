@@ -27,7 +27,7 @@ opt-in compilation benchmark is intentionally excluded.
 <tr><th>Module</th><th>Primary contract</th></tr>
 </thead>
 <tbody>
-<tr><td><code>test_bundles.py</code></td><td>six-file bundle loading, named targets, metadata, and non-overwriting builder behavior</td></tr>
+<tr><td><code>test_bundles.py</code></td><td>client-free JAX/OpenMM backend report, six-file bundle loading, named targets, metadata, and non-overwriting builder behavior</td></tr>
 <tr><td><code>test_api_consistency.py</code></td><td>public v0.5 namespace, signatures, aliases, and retired layout</td></tr>
 <tr><td><code>test_boltzmann_identity.py</code></td><td>flow-free adaptive identity stages with active sharpening and two MALA endpoints</td></tr>
 <tr><td><code>test_boltzmann_identity_artifacts.py</code></td><td>identity stage save/load/resume with sharpening histories and no flow files</td></tr>
