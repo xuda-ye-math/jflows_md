@@ -18,8 +18,8 @@ executable evidence lives under `smoke/`.
 <tr><td>construct a mixed flow</td><td><code>Mixed_NSF</code></td><td><code>test_mixed_nsf.py</code></td></tr>
 <tr><td>run a custom particle bridge</td><td><code>sequential_monte_carlo</code>, <code>mixed_mala</code></td><td><code>test_support_and_utils.py</code></td></tr>
 <tr><td>train one fixed stage</td><td><code>train_forward_KLX_G</code>, <code>train_forward_KLXX_G</code></td><td><code>test_float32_training.py</code>, <code>test_mixed_training.py</code></td></tr>
-<tr><td>run adaptive regularization sharpening without flow training</td><td><code>boltzmann_identity</code></td><td><code>test_boltzmann_identity.py</code></td></tr>
-<tr><td>run adaptive regularization sharpening with flow training</td><td><code>boltzmann_forward_KLX_G</code>, <code>boltzmann_forward_KLXX_G</code></td><td><code>test_sharpening_gate.py</code></td></tr>
+<tr><td>run adaptive-staging regularization sharpening without flow training</td><td><code>boltzmann_identity</code></td><td><code>test_boltzmann_identity.py</code></td></tr>
+<tr><td>run adaptive-staging regularization sharpening with flow training</td><td><code>boltzmann_forward_KLX_G</code>, <code>boltzmann_forward_KLXX_G</code></td><td><code>test_sharpening_gate.py</code></td></tr>
 <tr><td>resume complete stages</td><td><code>iterate_boltzmann</code>, <code>boltzmann.load.run</code></td><td><code>test_boltzmann_integration.py</code></td></tr>
 <tr><td>run native Cartesian dynamics</td><td><code>OpenMM_Potential</code>, <code>langevin</code>, <code>parallel_tempering</code></td><td><code>test_openmm.py</code></td></tr>
 <tr><td>construct a new bundle</td><td><code>jflows_md.bundle_build</code></td><td><code>test_bundles.py</code></td></tr>
@@ -200,7 +200,7 @@ flow, batch_ess = train_forward_KLXX_G(
 The QT pool is constructed once for this direct call; selected hat rows are
 freshened inside every optimizer step.
 
-## Run adaptive KLXX with sharpening
+## Run adaptive-staging KLXX with sharpening
 
 ```python
 from jflows_md.boltzmann import boltzmann_forward_KLXX_G
@@ -229,11 +229,11 @@ samples, stages = boltzmann_forward_KLXX_G(
     coeff_beta=0.5,
     chunks=32,
     bg_param={"tau_smc": 0.75, "tau_ess": 0.6},
-    monitor=Monitor(50, "[adaptive KLXX] "),
+    monitor=Monitor(50, "[adaptive-staging KLXX] "),
 )
 
 if not stages or stages[-1]["t"] != 1.0:
-    raise RuntimeError("adaptive molecular run did not reach its endpoint")
+    raise RuntimeError("adaptive-staging molecular run did not reach its endpoint")
 ```
 
 At each stage, inspect at least:
@@ -254,7 +254,7 @@ Use `pool_size=0` when SMC and training selection should consume the complete
 current population. A positive value creates a separately sampled selection
 pool but leaves final validation and stage output at full size.
 
-## Persist and resume adaptive stages
+## Persist and resume adaptive-staging runs
 
 ```python
 from jflows_md.boltzmann import iterate_boltzmann
@@ -374,7 +374,7 @@ replicas, energies, swap_acceptance = parallel_tempering(
 
 The first replica axis is the fixed temperature-slot order supplied by
 `temperatures_kelvin`. Inspect adjacent-pair `swap_acceptance` before using a
-temperature ladder for production sampling. The numerical ladder above is an
+temperature grid for production sampling. The numerical grid above is an
 interface example, not a universal recommendation.
 
 ## Build an external bundle
@@ -412,10 +412,12 @@ their old schema-v2 coordinate dictionaries.
 - Record the bundle path/name and manifest.
 - Record the target temperature and both regularization endpoints.
 - Record source, flow architecture, initialization policy, and all seeds.
-- Record particle, pool, batch, ladder, chunk, MALA, QT, and optimizer controls.
-- Require `stages[-1]["t"] == 1.0` before calling an adaptive run complete.
+- Record particle, pool, batch, SMC ladder, chunk, MALA, QT, and optimizer
+  controls.
+- Require `stages[-1]["t"] == 1.0` before calling an adaptive-staging run
+  complete.
 - Preserve post-sharpen populations and complete stage records for resume.
 - Evaluate held-out ESS, support, energy, stereochemistry, and molecular modes.
-- For OpenMM, record platform, timestep, friction, temperature ladder, exchange
+- For OpenMM, record platform, timestep, friction, temperature grid, exchange
   interval, and swap acceptance.
 - Distinguish smoke evidence from production convergence evidence.

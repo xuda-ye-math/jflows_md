@@ -1,7 +1,7 @@
 # High-level interfaces
 
-The high level coordinates adaptive molecular bridge selection, SMC target
-construction, one-stage flow training, trained-versus-identity selection,
+The high level coordinates adaptive-staging molecular bridge selection, SMC
+target construction, one-stage flow training, trained-versus-identity selection,
 regularization sharpening, population rejuvenation, and complete-stage
 persistence. It is the normal entry point for difficult molecular targets.
 The identity-only route omits flow training while retaining bridge selection,
@@ -34,6 +34,10 @@ The controller evolves two quantities together:
 
 1. the source-to-target bridge coefficient `t`; and
 2. the regularization state `rg(t)`.
+
+The coefficient `t` is a dimensionless stage-interpolation parameter, not a
+thermodynamic temperature. Physical temperature remains encoded in the source
+and target reduced potentials through their inverse-temperature factors.
 
 For endpoint pairs `rg_param_0` and `rg_param_1`,
 
@@ -87,7 +91,7 @@ identity and whether the training attempt passes. Sharpening ESS independently
 decides whether the same candidate endpoint can safely advance the
 regularization. Optimizer batch ESS and MALA acceptance are diagnostics only.
 
-## Adaptive identity generator
+## Adaptive-staging identity generator
 
 ```python
 boltzmann_identity(
@@ -136,7 +140,7 @@ trained generators. Each record has `objective="identity"`,
 ESS histories, SMC/MALA histories, and sharpening ESS/MALA histories. It has
 no flow, trained ESS, batch ESS, or initialization fields.
 
-## Adaptive KLX generator
+## Adaptive-staging KLX generator
 
 ```python
 boltzmann_forward_KLX_G(
@@ -173,7 +177,7 @@ selection pool as `source_samples` for `train_forward_KLX_G`. It adds the
 target-sample X penalty to forward KL but does not construct a quench-and-temper
 hat pool.
 
-## Adaptive KLXX generator
+## Adaptive-staging KLXX generator
 
 ```python
 boltzmann_forward_KLXX_G(
@@ -255,7 +259,7 @@ positive, only endpoint selection and trainer pool construction use the
 separately sampled selection pool. Trained-versus-identity validation and the
 post-stage population still use the complete `x_valid` population.
 
-## Adaptive policy
+## Adaptive stage policy
 
 `bg_param` overrides any subset of the defaults:
 
@@ -418,7 +422,7 @@ Attempt-aligned and sampler histories are:
 `sharpen_ess_hist` contains `NaN` when an attempt failed the flow ESS gate
 before sharpening was evaluated.
 
-## Minimal adaptive workflow
+## Minimal adaptive-staging workflow
 
 ```python
 import jax
@@ -610,7 +614,8 @@ paths, population paths, and completion status.
 
 ## Executable references
 
-- `smoke/test_mixed_training.py`: both adaptive objectives on a bounded path.
+- `smoke/test_mixed_training.py`: both objectives under adaptive-staging
+  execution on a bounded path.
 - `smoke/test_boltzmann_identity.py`: flow-free identity computation with
   observed pre- and post-sharpen MALA targets.
 - `smoke/test_boltzmann_identity_artifacts.py`: flow-free save/load/resume with

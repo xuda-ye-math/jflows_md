@@ -755,7 +755,7 @@ def boltzmann_identity(
     mc_image_radius=3,
     seed=0,
 ):
-    """Run adaptive identity-only molecular Boltzmann stages."""
+    """Run adaptive-staging identity-only molecular Boltzmann stages."""
     stages = []
     current = jnp.asarray(x_valid)
     for current, record, _ in iterate_identity(

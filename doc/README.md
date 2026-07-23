@@ -7,7 +7,7 @@ package:
 
 1. low-level molecular objects and numerical kernels;
 2. medium-level single-stage trainers; and
-3. high-level adaptive Boltzmann generators.
+3. high-level adaptive-staging Boltzmann generators.
 
 The live source is authoritative. Public JAX code should import from
 the root `jflows_md.backend` report or from `jflows_md.system`,
@@ -23,7 +23,7 @@ doc/
 ├── README.md                 # orientation, hierarchy, conventions
 ├── 01-low-level.md           # bundles, potentials, flows, samplers, OpenMM
 ├── 02-medium-level.md        # direct train_* functions and artifacts
-├── 03-high-level.md          # adaptive BG, sharpening, persistence, resume
+├── 03-high-level.md          # adaptive-staging BG, sharpening, persistence, resume
 ├── 04-smoke-tests.md         # executable contract checks by API area
 └── 05-workflows.md           # complete molecular workflows
 ```
@@ -71,7 +71,7 @@ jflows_md
         ├── boltzmann_forward_KLX_G
         ├── boltzmann_forward_KLXX_G
         ├── iterate_boltzmann
-        ├── adaptive SMC / identity-or-flow / sharpening gates
+        ├── adaptive stage selection / SMC / identity-or-flow / sharpening gates
         ├── write: create / stage / finish
         └── load: validate / load / fork / run / stage readers
 ```

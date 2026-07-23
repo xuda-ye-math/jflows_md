@@ -3,9 +3,8 @@
 The medium level trains one inverse molecular flow on already prepared,
 fixed-shape sample pools. It combines molecular G-direction objectives,
 compiled Adam scans, deterministic key derivation, optional monitoring, and
-optional rematerialization. It does not select an annealing endpoint, construct
-an adaptive SMC bridge, sharpen the regularization, or persist a multi-stage
-run.
+optional rematerialization. It does not select a stage endpoint, construct its
+SMC target, sharpen the regularization, or persist a multi-stage run.
 
 Public imports:
 

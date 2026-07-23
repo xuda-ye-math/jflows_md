@@ -29,19 +29,19 @@ opt-in compilation benchmark is intentionally excluded.
 <tbody>
 <tr><td><code>test_bundles.py</code></td><td>client-free JAX/OpenMM backend report, six-file bundle loading, named targets, metadata, and non-overwriting builder behavior</td></tr>
 <tr><td><code>test_api_consistency.py</code></td><td>public v0.5 namespace, signatures, aliases, and retired layout</td></tr>
-<tr><td><code>test_boltzmann_identity.py</code></td><td>flow-free adaptive identity stages with active sharpening and two MALA endpoints</td></tr>
+<tr><td><code>test_boltzmann_identity.py</code></td><td>flow-free adaptive-staging identity runs with active sharpening and two MALA endpoints</td></tr>
 <tr><td><code>test_boltzmann_identity_artifacts.py</code></td><td>identity stage save/load/resume with sharpening histories and no flow files</td></tr>
 <tr><td><code>test_artifacts.py</code></td><td>template-based mixed-flow, sample, and history round trips</td></tr>
 <tr><td><code>test_jflows_compatibility.py</code></td><td>the live generic <code>jflows</code> interfaces consumed by <code>jflows_md</code></td></tr>
 <tr><td><code>test_edge_cases.py</code></td><td>raw mixed-domain sampler equations and numerical edge cases</td></tr>
 <tr><td><code>test_mixed_nsf.py</code></td><td>mixed flow inversion, log-Jacobians, wrapping, masks, and seam behavior</td></tr>
-<tr><td><code>test_jflows_md_chunking.py</code></td><td>fixed-shape eager chunks, ladder controllers, and chunk equivalence</td></tr>
+<tr><td><code>test_jflows_md_chunking.py</code></td><td>fixed-shape eager chunks, SMC ladder controllers, and chunk equivalence</td></tr>
 <tr><td><code>test_float32_training.py</code></td><td>default-float32 direct trainer compilation and execution</td></tr>
 <tr><td><code>test_initialization.py</code></td><td>supplied-flow preservation, identity initialization, and stage starts</td></tr>
 <tr><td><code>test_boltzmann_checkpoints.py</code></td><td>complete-stage persistence, validation, loading, forking, and post-sharpen resume</td></tr>
 <tr><td><code>test_boltzmann_integration.py</code></td><td>actual computed-stage interruption and resumed-run equivalence</td></tr>
-<tr><td><code>test_mixed_training.py</code></td><td>direct KLX/KLXX plus bounded adaptive Boltzmann execution</td></tr>
-<tr><td><code>test_sharpening_gate.py</code></td><td>flow ESS and sharpening ESS gates with adaptive shrinking</td></tr>
+<tr><td><code>test_mixed_training.py</code></td><td>direct KLX/KLXX plus bounded adaptive-staging Boltzmann execution</td></tr>
+<tr><td><code>test_sharpening_gate.py</code></td><td>flow ESS and sharpening ESS gates with stage shrinking</td></tr>
 <tr><td><code>test_molecular_potential.py</code></td><td>JAX energies, forces, quotient Jacobian, temperature scaling, and seven-bundle parity</td></tr>
 <tr><td><code>test_regularization.py</code></td><td>the exact <code>(e,r)</code> energy map and pair-floor derivatives</td></tr>
 <tr><td><code>test_openmm.py</code></td><td>JAX/OpenMM energy and regularized-force parity plus native Langevin and parallel tempering</td></tr>
@@ -85,7 +85,7 @@ test_float32_glycerol_compile.py
 
 ### High level
 
-Use these when changing adaptive stage logic, sharpening, or persistence:
+Use these when changing adaptive-staging logic, sharpening, or persistence:
 
 ```text
 test_sharpening_gate.py
@@ -126,7 +126,7 @@ program deliberately enables x64.
 A zero exit status is necessary. Also verify that the expected PASS lines
 cover the intended feature. Important high-level postconditions include:
 
-- a complete adaptive run has a final stage with `t == 1.0`;
+- a complete adaptive-staging run has a final stage with `t == 1.0`;
 - an identity selection reports `selected == "identity"` and stores the
   corresponding flow;
 - a sharpening rejection emits no stage;
@@ -182,7 +182,7 @@ establish:
 - convergence of a production molecular simulation;
 - physical correctness of a newly constructed external bundle;
 - adequate mode coverage or effective sample size at scientific scale;
-- optimal thermostat, timestep, temperature ladder, or flow architecture; or
+- optimal thermostat, timestep, temperature grid, or flow architecture; or
 - compatibility with a platform or precision not exercised by the test.
 
 Production studies should retain independent holdouts, energy/support checks,

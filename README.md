@@ -1,6 +1,6 @@
 # jflows_md
 
-`jflows_md` 0.5.2 is the mixed-domain molecular companion to `jflows` 0.5.2.
+`jflows_md` 0.5.3 is the mixed-domain molecular companion to `jflows` 0.5.3.
 It supplies bundle-backed molecular potentials, flows on
 `R^p x T^q`, molecular KLX/KLXX training, sampling kernels, linear
 regularization sharpening, and complete-stage resume.
@@ -66,7 +66,7 @@ definition.
 jflows_md/
 ├── artifacts.py              generic template-based artifacts
 ├── boltzmann/
-│   ├── __init__.py           pure adaptive BG computation
+│   ├── __init__.py           pure adaptive-staging BG computation
 │   ├── write.py              atomic complete-stage writer
 │   └── load.py               load, inspect, fork, and resume
 ├── bundle_build/             optional OpenMM-side construction
@@ -139,14 +139,14 @@ trained, batch_ess = train_forward_KLX_G(
 )
 ```
 
-Direct trainers default to `initialize_from_identity=False`. Adaptive trained
-Boltzmann functions default to `True`, so each accepted-stage attempt starts
-from an identity parameterization unless warm-starting is explicitly selected.
-`boltzmann_identity` performs no flow training at all.
+Direct trainers default to `initialize_from_identity=False`. Adaptive-staging
+trained Boltzmann functions default to `True`, so each accepted-stage attempt
+starts from an identity parameterization unless warm-starting is explicitly
+selected. `boltzmann_identity` performs no flow training at all.
 
 ## Linear sharpening
 
-All three adaptive entry points require two regularization states. The
+All three adaptive-staging entry points require two regularization states. The
 identity-only form is:
 
 ```python
@@ -197,6 +197,10 @@ The controller uses
 rg(t) = rg_param_0 + t [rg_param_1 - rg_param_0].
 ```
 
+Here `t` is a dimensionless stage-interpolation parameter. It does not change
+the physical `temperature_kelvin` or inverse temperature `beta`, which remain
+properties of the molecular target.
+
 Let `U_s` be the source reduced potential. For an accepted step `a -> b`, it
 trains and selects a proposal between
 
@@ -215,7 +219,7 @@ log w_sharp = B_b^- - B_b^+,
 followed by resampling and MALA at `B_b^+`. Thus the emitted population at
 `t=1` targets `target.regularized(rg_param_1)`.
 
-The flow and sharpening transitions form one adaptive stage. Both the
+The flow and sharpening transitions form one accepted stage. Both the
 selected-flow ESS and the sharpening ESS must reach `bg_param["tau_ess"]`
 (default `0.6`). If either gate fails, the controller applies the configured
 `shrink_factor` to `b-a` and retries the complete stage. A stage is emitted

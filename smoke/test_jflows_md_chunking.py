@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Regression tests for eager molecular chunk and ladder controllers."""
+"""Regression tests for eager molecular chunk and SMC ladder controllers."""
 
 from __future__ import annotations
 
