@@ -9,10 +9,8 @@ scientific benchmark results.
 Run the suite from a source checkout with both repositories visible:
 
 ```bash
-source ~/.envs/jflows/bin/activate
 XLA_PYTHON_CLIENT_PREALLOCATE=false \
-PYTHONPATH=/data/projects/jflows:/data/projects/jflows_md \
-python /data/projects/jflows_md/smoke/run_all.py
+python smoke/run_all.py
 ```
 
 `run_all.py` starts every smoke module in a fresh Python subprocess. The
@@ -46,7 +44,7 @@ opt-in compilation benchmark is intentionally excluded.
 <tr><td><code>test_regularization.py</code></td><td>the exact <code>(e,r)</code> energy map and pair-floor derivatives</td></tr>
 <tr><td><code>test_openmm.py</code></td><td>JAX/OpenMM energy and regularized-force parity plus native Langevin and parallel tempering</td></tr>
 <tr><td><code>test_stereochemistry.py</code></td><td>schema-2 compatibility; NMA cis/trans, cyclohexane ring, one-center S-butanol, two-center RR-butanediol, CIP rejection, support, and flow checks</td></tr>
-<tr><td><code>test_support_and_utils.py</code></td><td>seven-target stereochemical support, mixed MALA, SMC, AIS, and quench-and-temper</td></tr>
+<tr><td><code>test_support_and_utils.py</code></td><td>seven-target stereochemical support, mixed MALA, SMC, AIS, and quench and temper</td></tr>
 <tr><td><code>test_float32_glycerol_compile.py</code></td><td>bounded real-glycerol energy, flow, and trainer compilation</td></tr>
 </tbody>
 </table>
@@ -106,7 +104,6 @@ levels and should accompany public interface changes.
 Run one module directly:
 
 ```bash
-PYTHONPATH=/data/projects/jflows:/data/projects/jflows_md \
 python smoke/test_openmm.py
 ```
 
@@ -144,14 +141,16 @@ To keep caches, bytecode, and transient artifacts out of the live repositories,
 copy the packages and selected smoke tests to a temporary root:
 
 ```bash
-tmp=$(mktemp -d /tmp/jflows-md-smoke.XXXXXX)
+jflows_root="${JFLOWS_ROOT:?set JFLOWS_ROOT}"
+jflows_md_root=$(pwd)
+tmp=$(mktemp -d)
 mkdir -p "$tmp/jflows" "$tmp/jflows_md"
 rsync -a --exclude='.git/' --exclude='__pycache__/' \
-  /data/projects/jflows/jflows "$tmp/jflows/"
+  "$jflows_root/jflows" "$tmp/jflows/"
 rsync -a --exclude='.git/' --exclude='__pycache__/' \
-  /data/projects/jflows_md/jflows_md \
-  /data/projects/jflows_md/smoke \
-  /data/projects/jflows_md/bundles \
+  "$jflows_md_root/jflows_md" \
+  "$jflows_md_root/smoke" \
+  "$jflows_md_root/bundles" \
   "$tmp/jflows_md/"
 
 XLA_PYTHON_CLIENT_PREALLOCATE=false \

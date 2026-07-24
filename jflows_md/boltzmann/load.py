@@ -91,7 +91,7 @@ def validate(run_dir) -> dict:
         if item["stage"] != number or saved["stage"] != number:
             raise ValueError("nonconsecutive stage manifest")
         if item["t"] != saved["t"]:
-            raise ValueError("stage endpoint disagrees with run manifest")
+            raise ValueError("stage point disagrees with run manifest")
         if saved["t_start"] != previous or not previous < saved["t"] <= 1.0:
             raise ValueError("invalid accepted-stage schedule")
         identity = saved.get("objective") == "identity"

@@ -58,7 +58,7 @@ EXPECTED_PUBLIC = {
 
 
 def main() -> None:
-    assert jflows_md.__version__ == "0.5.3"
+    assert jflows_md.__version__ == "0.5.4"
     assert set(jflows_md.__all__) == EXPECTED_PUBLIC
     output = io.StringIO()
     with redirect_stdout(output):

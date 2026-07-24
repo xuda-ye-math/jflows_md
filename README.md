@@ -1,6 +1,6 @@
 # jflows_md
 
-`jflows_md` 0.5.3 is the mixed-domain molecular companion to `jflows` 0.5.3.
+`jflows_md` is the mixed-domain molecular companion to `jflows`.
 It supplies bundle-backed molecular potentials, flows on
 `R^p x T^q`, molecular KLX/KLXX training, sampling kernels, linear
 regularization sharpening, and complete-stage resume.
@@ -79,7 +79,7 @@ jflows_md/
 ├── train.py                  compiled molecular KLX/KLXX trainers
 └── utils/
     ├── anneal.py             SMC and AIS
-    ├── quench.py             quench-and-temper
+    ├── quench.py             quench and temper
     └── rejuvenation.py       wrapped mixed-domain MALA
 ```
 
@@ -144,6 +144,19 @@ trained Boltzmann functions default to `True`, so each accepted-stage attempt
 starts from an identity parameterization unless warm-starting is explicitly
 selected. `boltzmann_identity` performs no flow training at all.
 
+## Methane Boltzmann generator example
+
+[`example/methane_9d_raw/`](example/methane_9d_raw/) is the repository's one
+minimal molecular Boltzmann generator example. It contains a complete 9D CH4
+driver, its fixed 300 K GAFF2/AM1-BCC and OBC1/ACE bundle, and the saved result
+reports for identity, forward KL, and KLXX. The example is self-contained and
+loads its bundle directly from `example/methane_9d_raw/bundle/`.
+
+The checked-in reports were copied from the completed KLXX experiment; they
+were not regenerated for this documentation update. To launch a new run from
+the example directory when desired, use `python train.py --method id`,
+`python train.py --method kl`, or `python train.py --method klxx`.
+
 ## Linear sharpening
 
 All three adaptive-staging entry points require two regularization states. The
@@ -165,8 +178,8 @@ particles, stages = boltzmann_identity(
 ```
 
 It omits every flow, training, optimizer, pool, and checkpoint argument.
-Identity removes only the learned proposal: SMC endpoint selection, complete
-population identity ESS, resampling, pre-sharpen MALA, exact regularization
+Identity removes only the learned proposal: SMC stage selection, identity ESS
+over the complete validation set, resampling, pre-sharpen MALA, exact regularization
 sharpening, its ESS gate, and final MALA remain active.
 
 The trained form is:
@@ -191,38 +204,52 @@ particles, stages = boltzmann_forward_KLX_G(
 )
 ```
 
-The controller uses
+The `_rg` helper computes
 
-```text
-rg(t) = rg_param_0 + t [rg_param_1 - rg_param_0].
-```
+$$
+\operatorname{rg}(t)
+=
+\mathtt{rg\_param\_0}
++t\left(\mathtt{rg\_param\_1}-\mathtt{rg\_param\_0}\right).
+$$
 
-Here `t` is a dimensionless stage-interpolation parameter. It does not change
-the physical `temperature_kelvin` or inverse temperature `beta`, which remain
-properties of the molecular target.
+Here $t$ is a dimensionless stage-interpolation parameter. It does not change
+the physical `temperature_kelvin` or inverse temperature $\beta$ (`beta`),
+which remain properties of the molecular target.
 
-Let `U_s` be the source reduced potential. For an accepted step `a -> b`, it
-trains and selects a proposal between
+Let $U_{\mathrm{source}}$ denote `source`, and let
+$U_{\operatorname{rg}(t)}$ denote `target.regularized(rg(t))`. For an accepted
+stage interval $a\to b$, the code variables `source_bridge` and `target_soft`
+are
 
-```text
-B_a    = (1-a) U_s + a U_rg(a)
-B_b^-  = (1-b) U_s + b U_rg(a).
-```
+$$
+\begin{aligned}
+B_a
+&=(1-a)U_{\mathrm{source}}+aU_{\operatorname{rg}(a)}, \\
+B_b^{-}
+&=(1-b)U_{\mathrm{source}}+bU_{\operatorname{rg}(a)}.
+\end{aligned}
+$$
 
-It then sharpens the particles exactly to
+After proposal selection and resampling, `target_sharp` is
 
-```text
-B_b^+  = (1-b) U_s + b U_rg(b)
-log w_sharp = B_b^- - B_b^+,
-```
+$$
+B_b^{+}=(1-b)U_{\mathrm{source}}+bU_{\operatorname{rg}(b)},
+$$
 
-followed by resampling and MALA at `B_b^+`. Thus the emitted population at
-`t=1` targets `target.regularized(rg_param_1)`.
+and `sharpen_log_weight` stores
+
+$$
+\log w_{\mathrm{sharpen}}=B_b^{-}-B_b^{+}.
+$$
+
+The controller then resamples and applies MALA at `target_sharp`. Thus the
+emitted samples at $t=1$ target `target.regularized(rg_param_1)`.
 
 The flow and sharpening transitions form one accepted stage. Both the
 selected-flow ESS and the sharpening ESS must reach `bg_param["tau_ess"]`
 (default `0.6`). If either gate fails, the controller applies the configured
-`shrink_factor` to `b-a` and retries the complete stage. A stage is emitted
+`shrink_factor` to $b-a$ and retries the complete stage. A stage is emitted
 and made available to persistence only after both gates pass.
 
 Each stage record deliberately distinguishes:
@@ -341,7 +368,7 @@ bundle by name:
 ```python
 from jflows_md import Molecular_Bundle, available_bundles
 
-bundle_root = "/path/to/downloaded/bundles"
+bundle_root = "downloaded-bundles"
 names = available_bundles(bundle_root)
 bundle = Molecular_Bundle.load(names[0], root=bundle_root)
 ```
@@ -361,11 +388,11 @@ pip install "jax[cuda13]" "openmm[cuda13]"
 Installing a JAX CUDA extra does not install the OpenMM CUDA plugin, and the
 OpenMM extra does not install the JAX plugin. These extras select the
 independently packaged JAX and OpenMM CUDA wheels; they must use the same CUDA
-generation. Then install both projects:
+generation. Then install the local `jflows` checkout and this project:
 
 ```bash
-pip install -e /path/to/jflows
-pip install -e /path/to/jflows_md
+python -m pip install -e "${JFLOWS_ROOT:?set JFLOWS_ROOT}"
+python -m pip install -e .
 ```
 
 Inspect the installed runtimes without creating a JAX client or OpenMM
@@ -381,8 +408,8 @@ Base OpenMM-side construction is optional and CPU-capable; select a CUDA extra
 above when native GPU execution is required:
 
 ```bash
-pip install -e "/path/to/jflows_md[openmm]"
-pip install -e "/path/to/jflows_md[bundles]"
+python -m pip install -e ".[openmm]"
+python -m pip install -e ".[bundles]"
 python -m jflows_md.bundle_build \
   glycerol molecule.prmtop molecule.rst7 generated/glycerol
 ```
@@ -411,9 +438,8 @@ Run the complete local suite from the repository root only when the accelerator
 is available:
 
 ```bash
-PYTHONPATH=/path/to/jflows:/path/to/jflows_md \
 XLA_PYTHON_CLIENT_PREALLOCATE=false \
-python /path/to/jflows_md/smoke/run_all.py
+python smoke/run_all.py
 ```
 
 `smoke/benchmark_compile.py` is an opt-in compilation benchmark and is not part

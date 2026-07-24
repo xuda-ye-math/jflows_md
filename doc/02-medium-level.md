@@ -3,7 +3,7 @@
 The medium level trains one inverse molecular flow on already prepared,
 fixed-shape sample pools. It combines molecular G-direction objectives,
 compiled Adam scans, deterministic key derivation, optional monitoring, and
-optional rematerialization. It does not select a stage endpoint, construct its
+optional rematerialization. It does not select a stage point, construct its
 SMC target, sharpen the regularization, or persist a multi-stage run.
 
 Public imports:
@@ -38,7 +38,7 @@ trained_flow, batch_ess_hist
 
 `batch_ess_hist.shape == (train_steps,)`. It measures the pre-update
 source-proposal ESS on the optimizer batch. It is a monitor, not an acceptance
-gate and not a full-validation result.
+gate and not a result over the complete validation set.
 
 The supplied flow is used as-is unless `initialize_from_identity=True`, in
 which case training starts from `flow.zeros()`. Equinox flows are immutable, so

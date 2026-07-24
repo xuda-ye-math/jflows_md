@@ -1,4 +1,4 @@
-"""Pure molecular Boltzmann-generator computations."""
+"""Pure molecular Boltzmann generator computations."""
 
 import time
 

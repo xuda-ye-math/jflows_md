@@ -35,7 +35,7 @@ import jax
 
 from jflows_md import Molecular_Bundle, Molecular_Potential, available_bundles
 
-bundle_root = "/path/to/downloaded/bundles"
+bundle_root = "downloaded-bundles"
 bundle_names = available_bundles(bundle_root)
 bundle = Molecular_Bundle.load(bundle_names[0], root=bundle_root)
 target = Molecular_Potential(bundle)

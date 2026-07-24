@@ -1,10 +1,10 @@
 # High-level interfaces
 
-The high level coordinates adaptive-staging molecular bridge selection, SMC
+The high level coordinates adaptive molecular stage selection, SMC
 target construction, one-stage flow training, trained-versus-identity selection,
 regularization sharpening, population rejuvenation, and complete-stage
 persistence. It is the normal entry point for difficult molecular targets.
-The identity-only route omits flow training while retaining bridge selection,
+The identity-only route omits flow training while retaining stage selection,
 regularization sharpening, and rejuvenation.
 
 Public computation imports:
@@ -28,67 +28,74 @@ from jflows_md.boltzmann.load import (
 )
 ```
 
-## Bridge and regularization model
+## Stage interpolation and regularization model
 
 The controller evolves two quantities together:
 
-1. the source-to-target bridge coefficient `t`; and
-2. the regularization state `rg(t)`.
+1. the source-to-target interpolation parameter $t$; and
+2. the regularization state $\operatorname{rg}(t)$.
 
-The coefficient `t` is a dimensionless stage-interpolation parameter, not a
-thermodynamic temperature. Physical temperature remains encoded in the source
-and target reduced potentials through their inverse-temperature factors.
+The coefficient $t$ is a dimensionless stage-interpolation parameter. It does
+not change the physical `temperature_kelvin` or inverse temperature $\beta$
+(`beta`), which remain properties of the molecular target.
 
-For endpoint pairs `rg_param_0` and `rg_param_1`,
+For endpoint pairs `rg_param_0` and `rg_param_1`, the `_rg` helper computes
 
-```text
-rg(t) = rg_param_0 + t [rg_param_1 - rg_param_0].
-```
+$$
+\operatorname{rg}(t)
+=
+\mathtt{rg\_param\_0}
++t\left(\mathtt{rg\_param\_1}-\mathtt{rg\_param\_0}\right).
+$$
 
-At the start `a` of one accepted stage, define
+Let $U_{\mathrm{source}}$ denote `source`, and let
+$U_{\operatorname{rg}(t)}$ denote `target.regularized(rg(t))`. At the start
+$a$ of one accepted stage, the code variable `source_bridge` is
 
-```text
-U_a = (1-a) U_source + a U_rg(a).
-```
+$$
+B_a=(1-a)U_{\mathrm{source}}+aU_{\operatorname{rg}(a)}.
+$$
 
-For a candidate endpoint `b`, flow training first uses the pre-sharpen target
+For a candidate stage point $b$, flow training first uses `target_soft`, the
+pre-sharpen target
 
-```text
-U_b^- = (1-b) U_source + b U_rg(a).
-```
+$$
+B_b^{-}=(1-b)U_{\mathrm{source}}+bU_{\operatorname{rg}(a)}.
+$$
 
-After a flow is selected and resampled, the regularization advances to the
-post-sharpen target
+After a flow is selected and resampled, the regularization advances to
+`target_sharp`, the post-sharpen target
 
-```text
-U_b^+ = (1-b) U_source + b U_rg(b).
-```
+$$
+B_b^{+}=(1-b)U_{\mathrm{source}}+bU_{\operatorname{rg}(b)}.
+$$
 
-The exact sharpening weight is
+The code variable `sharpen_log_weight` stores the exact sharpening log weight,
 
-```text
-log w_sharp = U_b^- - U_b^+.
-```
+$$
+\log w_{\mathrm{sharpen}}=B_b^{-}-B_b^{+}.
+$$
 
-The population is then resampled and MALA-rejuvenated at `U_b^+`. At `t=1`, a
-complete run therefore targets `target.regularized(rg_param_1)`. Choose
-`rg_param_1` to represent the intended physical or nearly physical endpoint.
+The samples are then resampled and MALA-rejuvenated at `target_sharp`. At
+$t=1$, a complete run therefore targets
+`target.regularized(rg_param_1)`. Choose `rg_param_1` to represent the intended
+physical or nearly physical endpoint.
 
 ## Design philosophy
 
 The controller keeps four decisions distinct:
 
 ```text
-candidate bridge selection  -> minimum SMC ESS >= tau_smc
-trained/identity map choice  -> larger full-validation ESS wins
+candidate stage selection   -> minimum SMC ESS >= tau_smc
+trained/identity map choice  -> larger ESS over the complete validation set wins
 flow-stage acceptance       -> selected validation ESS >= tau_ess
 sharpening acceptance        -> sharpening ESS >= tau_ess
 ```
 
-SMC ESS decides whether a candidate bridge is feasible before training.
-Full-validation proposal ESS decides whether the trained flow is better than
+SMC ESS decides whether a candidate stage is feasible before training.
+Proposal ESS over the complete validation set decides whether the trained flow is better than
 identity and whether the training attempt passes. Sharpening ESS independently
-decides whether the same candidate endpoint can safely advance the
+decides whether the same candidate stage point can safely advance the
 regularization. Optimizer batch ESS and MALA acceptance are diagnostics only.
 
 ## Adaptive-staging identity generator
@@ -114,7 +121,7 @@ boltzmann_identity(
 
 `boltzmann_identity` is the molecular flow-free baseline. It has no `flow`,
 `pool_size`, `batch_size`, `train_steps`, `lr`, checkpoint, optimizer, or
-initialization arguments. For each candidate endpoint it performs:
+initialization arguments. For each candidate stage point it performs:
 
 ```text
 current post-sharpen population at U_a
@@ -131,7 +138,7 @@ current post-sharpen population at U_a
 Thus identity removes only the trained transport map. Sharpening still takes
 effect and can independently shrink a candidate interval. The same
 `bg_param["tau_ess"]` gates both identity reweighting and sharpening, while
-`tau_smc` gates endpoint selection. `chunks` partitions SMC, identity and
+`tau_smc` gates stage selection. `chunks` partitions SMC, identity and
 sharpening weights, and both MALA calls.
 
 The returned `(samples, stages)` follows the same completion rule as the
@@ -174,7 +181,7 @@ boltzmann_forward_KLX_G(
 
 KLX uses the candidate SMC population as `target_samples` and the current
 selection pool as `source_samples` for `train_forward_KLX_G`. It adds the
-target-sample X penalty to forward KL but does not construct a quench-and-temper
+target-sample X penalty to forward KL but does not construct a quench and temper
 hat pool.
 
 ## Adaptive-staging KLXX generator
@@ -235,10 +242,10 @@ penalty.
 <tr><th>Control</th><th>Role</th></tr>
 </thead>
 <tbody>
-<tr><td><code>x_valid</code></td><td>complete current population; full-validation comparison and emitted population</td></tr>
+<tr><td><code>x_valid</code></td><td>complete current validation set; comparison and emitted samples</td></tr>
 <tr><td><code>pool_size</code></td><td><code>0</code> uses the complete population for SMC/training selection; positive values sample that many rows with replacement</td></tr>
 <tr><td><code>batch_size</code>, <code>train_steps</code>, <code>lr</code></td><td>medium-level Adam controls</td></tr>
-<tr><td><code>ladder</code></td><td>uniform SMC levels between the current and candidate bridge</td></tr>
+<tr><td><code>ladder</code></td><td>uniform SMC levels between the current and candidate stage potentials</td></tr>
 <tr><td><code>mc_dt</code>, <code>mc_steps</code></td><td>mixed MALA controls in SMC, post-flow rejuvenation, sharpening, and KLXX hat freshening</td></tr>
 <tr><td><code>mc_image_radius</code></td><td>periodic wrapped-normal image radius</td></tr>
 <tr><td><code>chunks</code></td><td>row partitions for SMC, QT, validation weights, and population MALA</td></tr>
@@ -255,7 +262,7 @@ penalty.
 </div>
 
 If `pool_size=0`, SMC and training use all current validation rows. If it is
-positive, only endpoint selection and trainer pool construction use the
+positive, only stage selection and trainer pool construction use the
 separately sampled selection pool. Trained-versus-identity validation and the
 post-stage population still use the complete `x_valid` population.
 
@@ -288,7 +295,7 @@ post-stage population still use the complete `x_valid` population.
 <tr><td><code>enlarge_factor</code></td><td>growth applied to the preceding accepted increment</td></tr>
 <tr><td><code>tau_smc</code></td><td>minimum per-level SMC ESS needed before training</td></tr>
 <tr><td><code>tau_ess</code></td><td>shared threshold for selected-flow ESS and sharpening ESS</td></tr>
-<tr><td><code>t_tol</code></td><td>snap a near-final candidate endpoint to one</td></tr>
+<tr><td><code>t_tol</code></td><td>snap a near-final candidate stage point to one</td></tr>
 <tr><td><code>max_stages</code></td><td>maximum accepted stages</td></tr>
 <tr><td><code>max_retry</code></td><td>training/sharpening attempts per stage</td></tr>
 </tbody>
@@ -296,7 +303,7 @@ post-stage population still use the complete `x_valid` population.
 
 </div>
 
-Endpoint selection can shrink a candidate repeatedly before one training
+Stage selection can shrink a candidate repeatedly before one training
 attempt. If selected validation ESS or sharpening ESS then fails, the endpoint
 is shrunk again and the complete attempt is repeated. Exhausting selection,
 retry, or stage limits returns an incomplete run rather than inventing a final
@@ -385,7 +392,7 @@ post-sharpen population endpoint.
 <tr><th>Field</th><th>Meaning</th></tr>
 </thead>
 <tbody>
-<tr><td><code>t_start</code>, <code>t</code></td><td>accepted bridge interval</td></tr>
+<tr><td><code>t_start</code>, <code>t</code></td><td>accepted stage interval</td></tr>
 <tr><td><code>rg_start</code>, <code>rg_end</code></td><td>regularization pair before and after sharpening</td></tr>
 <tr><td><code>flow_rg</code></td><td>regularization used by the trained proposal; equals <code>rg_start</code></td></tr>
 <tr><td><code>population_rg</code></td><td>regularization of emitted particles; equals <code>rg_end</code></td></tr>

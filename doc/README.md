@@ -126,7 +126,7 @@ jflows_md/
 - Random JAX entry points take explicit PRNG keys. Split or fold keys for
   logically independent operations.
 - `chunks` is a number of row partitions. It controls eager JAX work in mixed
-  MALA, SMC, AIS, quench-and-temper, and validation-weight evaluation.
+  MALA, SMC, AIS, quench and temper, and validation-weight evaluation.
 - Mixed Langevin is MALA and always includes the Metropolis correction.
 - The regularization state is the pair `(e, r)`: an energy threshold in kJ/mol
   and a nonbonded pair-distance floor in nm.
@@ -140,7 +140,7 @@ jflows_md/
   with [Low-level interfaces](01-low-level.md).
 - Training one fixed molecular stage: continue to
   [Medium-level interfaces](02-medium-level.md).
-- Bridging a difficult target while sharpening the regularization: continue to
+- Advancing through stages while sharpening the regularization: continue to
   [High-level interfaces](03-high-level.md).
 - Finding the executable contract for one feature: use
   [Smoke tests](04-smoke-tests.md).
@@ -149,11 +149,11 @@ jflows_md/
 
 ## Runtime setup
 
-Use the same environment as `jflows` and point imports at both live roots:
+From a source checkout, install this project and its declared dependencies:
 
 ```bash
-source ~/.envs/jflows/bin/activate
-PYTHONPATH=/data/projects/jflows:/data/projects/jflows_md python your_script.py
+python -m pip install -e .
+python your_script.py
 ```
 
 For standalone JAX programs, set device preallocation before importing JAX:

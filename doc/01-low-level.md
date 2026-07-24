@@ -53,7 +53,7 @@ OpenMM GPU backend: CUDA 13 (8.5.2) — available
 ## Molecular bundles
 
 ```python
-bundle_root = "/path/to/downloaded/bundles"
+bundle_root = "downloaded-bundles"
 names = available_bundles(bundle_root)
 bundle = Molecular_Bundle.load(names[0], root=bundle_root)
 ```
@@ -319,8 +319,8 @@ U_rg(q) = beta [E_ref,r + R_e(d)] - log J(q).
 
 `soft(q)` evaluates that reduced surrogate. `soft.regularized_energy(q)`
 returns the mapped Cartesian energy, while `soft.physical_energy(q)` still
-returns the original physical energy. Regularization is a training and
-sampling bridge; it does not mutate `target`.
+returns the original physical energy. Regularization defines a training and
+sampling potential; it does not mutate `target`.
 
 ## Mixed flows
 
@@ -482,7 +482,7 @@ and the MALA acceptance history.
 
 `chunks` always means a number of row partitions, not a row count. Larger
 values reduce the number of rows entering one eager compiled kernel. The same
-spelling is used for mixed MALA, SMC, AIS, quench-and-temper, and high-level
+spelling is used for mixed MALA, SMC, AIS, quench and temper, and high-level
 validation weights.
 
 Chunking does not change the target distribution or objective. Different

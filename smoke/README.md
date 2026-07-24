@@ -11,7 +11,7 @@ The suite checks:
 - canonical six-file bundle loading and stored OpenMM parity;
 - BAT round trips, Jacobians, molecular support, and Amber/OBC energies;
 - mixed Euclidean/torus NSF inversion and seam behavior;
-- fixed-shape chunked MALA, SMC, AIS, and quench-and-temper kernels;
+- fixed-shape chunked MALA, SMC, AIS, and quench and temper kernels;
 - minimal two-value KLX/KLXX training;
 - linear `(e,r)` sharpening and its post-sharpen endpoint;
 - OpenMM/JAX energy and regularization parity plus native Langevin and replica exchange;
