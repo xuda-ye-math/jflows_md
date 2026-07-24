@@ -257,12 +257,14 @@ target = Molecular_Potential.from_bundle(
 )
 ```
 
-For internal coordinates `q`, the target evaluates
+For internal coordinates $q$, the target evaluates
 
-```text
-U(q) = beta E(x(q)) - log J(q),
-beta = 1 / (k_B T).
-```
+$$
+\begin{aligned}
+U(q)&=\beta E(x(q))-\log J(q), \\
+\beta&=\frac{1}{k_{\mathrm B}T}.
+\end{aligned}
+$$
 
 `E` is the pure-JAX Amber bonded/nonbonded plus OBC1/ACE energy in kJ/mol.
 `J` is the coordinate Jacobian for the rigid-motion-quotient chart. The
@@ -270,7 +272,7 @@ potential consumes `[N,d]` and returns `[N]`, so it can be used by generic
 `jflows` losses and potential algebra.
 
 `KB_KJ_MOL_K = 0.00831446261815324` is the package conversion constant used
-for `beta` when energies are measured in kJ/mol and temperature in kelvin.
+for $\beta$ when energies are measured in kJ/mol and temperature in kelvin.
 
 <div align="center">
 
@@ -303,19 +305,23 @@ floor affects only regular and exception Amber Coulomb/Lennard-Jones pair
 distances. Bonded terms, OBC1/ACE, the coordinate map, and the physical target
 remain unchanged.
 
-Let `E_r` be the floor-aware energy and `E_ref,r` its value at the bundle
-reference. With `d = E_r - E_ref,r`, the mapped excess is
+Let $E_r$ be the floor-aware energy and $E_{\mathrm{ref},r}$ its value at the
+bundle reference. With $d=E_r-E_{\mathrm{ref},r}$, the mapped excess is
 
-```text
-R_e(d) = d                         for d <= e,
-       = e [1 + log(d/e)]          for d > e.
-```
+$$
+R_e(d)=
+\begin{cases}
+d, & d\le e, \\
+e\left[1+\log(d/e)\right], & d>e.
+\end{cases}
+$$
 
 The regularized reduced potential is
 
-```text
-U_rg(q) = beta [E_ref,r + R_e(d)] - log J(q).
-```
+$$
+U_{\mathrm{rg}}(q)
+=\beta\left[E_{\mathrm{ref},r}+R_e(d)\right]-\log J(q).
+$$
 
 `soft(q)` evaluates that reduced surrogate. `soft.regularized_energy(q)`
 returns the mapped Cartesian energy, while `soft.physical_energy(q)` still

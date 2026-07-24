@@ -116,7 +116,7 @@ jflows_md/
 - JAX molecular coordinates live in `R^p x T^q`: Euclidean coordinates come
   first and periodic torsions come last.
 - `Molecular_Potential` is a reduced internal-coordinate potential,
-  `U(q) = beta E(x(q)) - log J(q)`.
+  $U(q)=\beta E(x(q))-\log J(q)$.
 - Obtain the mixed domain and matched source from a loaded target. Do not
   construct application code from `jflows_md.core` objects.
 - `Molecular_Source` is Gaussian in the Euclidean block and uniform on the

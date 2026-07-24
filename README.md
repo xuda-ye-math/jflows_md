@@ -13,12 +13,14 @@ offline concerns; persistence is separate from computation.
 ## Reduced potential and inverse temperature
 
 `Molecular_Potential` owns the inverse temperature. For internal coordinates
-`q` and their canonical Cartesian representative `x(q)`, it evaluates
+$q$ and their canonical Cartesian representative $x(q)$, it evaluates
 
-```text
-U(q) = beta E(x(q)) - log J(q),
-beta = 1 / (k_B T).
-```
+$$
+\begin{aligned}
+U(q)&=\beta E(x(q))-\log J(q), \\
+\beta&=\frac{1}{k_{\mathrm B}T}.
+\end{aligned}
+$$
 
 The trainers and Boltzmann controllers consume reduced potentials and do not
 apply another temperature factor. A regularized potential modifies the
@@ -45,20 +47,29 @@ flow = Mixed_NSF(
 soft = target.regularized((50.0, 0.10))  # (e [kJ/mol], r [nm])
 ```
 
-For `rg_param=(e,r)`, `r` floors only the regular and exception Amber
-Coulomb/Lennard-Jones pair distances. If `E_r` is that floor-aware energy and
-`E_ref,r` its value at the bundle reference, the excess `d=E_r-E_ref,r` is
+For `rg_param=(e,r)`, $r$ floors only the regular and exception Amber
+Coulomb/Lennard-Jones pair distances. If $E_r$ is that floor-aware energy and
+$E_{\mathrm{ref},r}$ its value at the bundle reference, the excess
+$d=E_r-E_{\mathrm{ref},r}$ is
 mapped by
 
-```text
-R_e(d) = d                         if d <= e
-       = e [1 + log(d/e)]          if d > e.
-```
+$$
+R_e(d)=
+\begin{cases}
+d, & d\le e, \\
+e\left[1+\log(d/e)\right], & d>e.
+\end{cases}
+$$
 
 The regularized reduced potential is
-`U_rg(q)=beta[E_ref,r+R_e(d)]-log J(q)`. The pair `(e,r)` is the complete
-regularization state; no optimizer clipping parameter participates in this
-definition.
+
+$$
+U_{\mathrm{rg}}(q)
+=\beta\left[E_{\mathrm{ref},r}+R_e(d)\right]-\log J(q).
+$$
+
+The pair $(e,r)$ is the complete regularization state; no optimizer clipping
+parameter participates in this definition.
 
 ## Layout
 
@@ -207,7 +218,7 @@ particles, stages = boltzmann_forward_KLX_G(
 The `_rg` helper computes
 
 $$
-\operatorname{rg}(t)
+\mathrm{rg}(t)
 =
 \mathtt{rg\_param\_0}
 +t\left(\mathtt{rg\_param\_1}-\mathtt{rg\_param\_0}\right).
@@ -218,23 +229,23 @@ the physical `temperature_kelvin` or inverse temperature $\beta$ (`beta`),
 which remain properties of the molecular target.
 
 Let $U_{\mathrm{source}}$ denote `source`, and let
-$U_{\operatorname{rg}(t)}$ denote `target.regularized(rg(t))`. For an accepted
+$U_{\mathrm{rg}(t)}$ denote `target.regularized(rg(t))`. For an accepted
 stage interval $a\to b$, the code variables `source_bridge` and `target_soft`
 are
 
 $$
 \begin{aligned}
 B_a
-&=(1-a)U_{\mathrm{source}}+aU_{\operatorname{rg}(a)}, \\
+&=(1-a)U_{\mathrm{source}}+aU_{\mathrm{rg}(a)}, \\
 B_b^{-}
-&=(1-b)U_{\mathrm{source}}+bU_{\operatorname{rg}(a)}.
+&=(1-b)U_{\mathrm{source}}+bU_{\mathrm{rg}(a)}.
 \end{aligned}
 $$
 
 After proposal selection and resampling, `target_sharp` is
 
 $$
-B_b^{+}=(1-b)U_{\mathrm{source}}+bU_{\operatorname{rg}(b)},
+B_b^{+}=(1-b)U_{\mathrm{source}}+bU_{\mathrm{rg}(b)},
 $$
 
 and `sharpen_log_weight` stores

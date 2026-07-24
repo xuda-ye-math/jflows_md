@@ -33,7 +33,7 @@ from jflows_md.boltzmann.load import (
 The controller evolves two quantities together:
 
 1. the source-to-target interpolation parameter $t$; and
-2. the regularization state $\operatorname{rg}(t)$.
+2. the regularization state $\mathrm{rg}(t)$.
 
 The coefficient $t$ is a dimensionless stage-interpolation parameter. It does
 not change the physical `temperature_kelvin` or inverse temperature $\beta$
@@ -42,32 +42,32 @@ not change the physical `temperature_kelvin` or inverse temperature $\beta$
 For endpoint pairs `rg_param_0` and `rg_param_1`, the `_rg` helper computes
 
 $$
-\operatorname{rg}(t)
+\mathrm{rg}(t)
 =
 \mathtt{rg\_param\_0}
 +t\left(\mathtt{rg\_param\_1}-\mathtt{rg\_param\_0}\right).
 $$
 
 Let $U_{\mathrm{source}}$ denote `source`, and let
-$U_{\operatorname{rg}(t)}$ denote `target.regularized(rg(t))`. At the start
+$U_{\mathrm{rg}(t)}$ denote `target.regularized(rg(t))`. At the start
 $a$ of one accepted stage, the code variable `source_bridge` is
 
 $$
-B_a=(1-a)U_{\mathrm{source}}+aU_{\operatorname{rg}(a)}.
+B_a=(1-a)U_{\mathrm{source}}+aU_{\mathrm{rg}(a)}.
 $$
 
 For a candidate stage point $b$, flow training first uses `target_soft`, the
 pre-sharpen target
 
 $$
-B_b^{-}=(1-b)U_{\mathrm{source}}+bU_{\operatorname{rg}(a)}.
+B_b^{-}=(1-b)U_{\mathrm{source}}+bU_{\mathrm{rg}(a)}.
 $$
 
 After a flow is selected and resampled, the regularization advances to
 `target_sharp`, the post-sharpen target
 
 $$
-B_b^{+}=(1-b)U_{\mathrm{source}}+bU_{\operatorname{rg}(b)}.
+B_b^{+}=(1-b)U_{\mathrm{source}}+bU_{\mathrm{rg}(b)}.
 $$
 
 The code variable `sharpen_log_weight` stores the exact sharpening log weight,
