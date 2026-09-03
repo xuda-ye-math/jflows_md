@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Pure-JAX energy, force, Jacobian, and API smoke tests for seven molecules."""
+"""Pure-JAX energy, force, Jacobian, and API smoke tests for the five bundles."""
 
 from __future__ import annotations
 
@@ -24,13 +24,11 @@ from jflows_md.system import Molecular_Bundle  # noqa: E402
 
 
 EXPECTED = {
-    "adp_ff96_obc1": (60, 42, 18),
-    "glycerol_gaff2_am1bcc_obc1": (36, 25, 11),
-    "diethanolamine_gaff2_am1bcc_obc1": (48, 33, 15),
-    "nma_ff96_obc1": (30, 21, 9),
-    "s_2_butanol_gaff2_am1bcc_obc1": (39, 28, 11),
-    "rr_2_3_butanediol_gaff2_am1bcc_obc1": (42, 31, 11),
-    "cyclohexane_gaff2_am1bcc_obc1": (48, 33, 15),
+    "alanine_dipeptide_ff96_obc1": (60, 42, 18),
+    "methane_gaff2_am1bcc_obc1": (9, 7, 2),
+    "ethane_gaff2_am1bcc_obc1": (18, 13, 5),
+    "propane_gaff2_am1bcc_obc1": (27, 19, 8),
+    "n_butane_gaff2_am1bcc_obc1": (36, 25, 11),
 }
 
 
@@ -69,64 +67,12 @@ def check_rigid_motion_quotient_jacobian(bundle: Molecular_Bundle) -> None:
     _, autodiff = jnp.linalg.slogdet(jacobian)
     np.testing.assert_allclose(reported, autodiff, rtol=0, atol=1e-11)
 
-def check_regularized_potential() -> None:
-    """Check the public e/r surrogate without changing the physical target."""
-
-    potential = Molecular_Potential.from_bundle(
-        "glycerol_gaff2_am1bcc_obc1"
-    )
-    regularized = potential.regularized((100.0, 0.0))
-    reference = potential.reference_internal()[None]
-    np.testing.assert_allclose(
-        regularized(reference), potential(reference), rtol=0, atol=1e-12
-    )
-    q = potential.source().samples(jax.random.key(701), N=16)
-    physical = potential.physical_energy(q)
-    deformed = regularized.regularized_energy(q)
-    excess = physical - regularized.reference_energy_kj_mol
-    over = jnp.maximum(excess - 100.0, 0.0)
-    expected_energy = regularized.reference_energy_kj_mol + jnp.where(
-        excess > 100.0,
-        100.0 + 100.0 * jnp.log1p(over / 100.0),
-        excess,
-    )
-    np.testing.assert_allclose(deformed, expected_energy, rtol=0, atol=1e-12)
-    np.testing.assert_allclose(regularized.physical_energy(q), physical, rtol=0, atol=0)
-    assert bool(jnp.all(deformed <= physical))
-
-    _, logdet = potential.coordinates.to_cartesian(q)
-    np.testing.assert_allclose(
-        regularized(q), potential.beta * deformed - logdet, rtol=0, atol=1e-11
-    )
-    higher_cut = potential.regularized((200.0, 0.0))
-    assert bool(
-        jnp.all(
-            higher_cut.regularized_energy(q)
-            >= regularized.regularized_energy(q)
-        )
-    )
-    assert regularized.domain is potential.domain
-    assert float(regularized.energy_threshold_kj_mol) == 100.0
-    assert float(regularized.pair_distance_floor_nm) == 0.0
-    infinite = regularized._regularize_energy(jnp.asarray([jnp.inf]))
-    assert bool(jnp.isposinf(infinite[0]))
-    assert not bool(jnp.isnan(infinite[0]))
-
-    cut = regularized.reference_energy_kj_mol + 100.0
-    left = jax.grad(lambda value: regularized._regularize_energy(value))(cut - 1e-3)
-    right = jax.grad(lambda value: regularized._regularize_energy(value))(cut + 1e-3)
-    np.testing.assert_allclose(left, 1.0, rtol=0, atol=1e-6)
-    np.testing.assert_allclose(right, 1.0, rtol=0, atol=3e-5)
-
-    print("PASS molecular e/r regularization API")
-
-
 def check_temperature_override() -> None:
     """Changing temperature rescales energy but preserves bundle mechanics."""
 
-    cold = Molecular_Potential.from_bundle("glycerol_gaff2_am1bcc_obc1")
+    cold = Molecular_Potential.from_bundle("alanine_dipeptide_ff96_obc1")
     hot = Molecular_Potential.from_bundle(
-        "glycerol_gaff2_am1bcc_obc1", temperature_kelvin=600.0
+        "alanine_dipeptide_ff96_obc1", temperature_kelvin=600.0
     )
     assert cold.temperature_kelvin == 300.0
     assert hot.temperature_kelvin == 600.0
@@ -148,7 +94,7 @@ def check_temperature_override() -> None:
 def check_empty_force_interactions() -> None:
     """Small molecules may legitimately omit one or more force families."""
 
-    bundle = Molecular_Bundle.load("glycerol_gaff2_am1bcc_obc1")
+    bundle = Molecular_Bundle.load("alanine_dipeptide_ff96_obc1")
     spec = dict(bundle.system)
     for index_name, value_names in (
         ("bond_idx", ("bond_length_nm", "bond_k_kj_mol_nm2")),
@@ -243,10 +189,9 @@ def main() -> None:
         )
 
     check_rigid_motion_quotient_jacobian(
-        Molecular_Bundle.load("glycerol_gaff2_am1bcc_obc1")
+        Molecular_Bundle.load("alanine_dipeptide_ff96_obc1")
     )
     print("PASS rigid-motion-quotient BAT Jacobian")
-    check_regularized_potential()
     check_temperature_override()
     check_empty_force_interactions()
 

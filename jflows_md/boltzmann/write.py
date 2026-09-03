@@ -22,36 +22,27 @@ import equinox as eqx
 import numpy as np
 
 
-__all__ = ["create", "finish", "stage"]
+__all__ = ["FORMAT", "create", "finish", "stage"]
+
+FORMAT = "jflows-md-stage-resume-3"
 
 _HISTORY_NAMES = (
     "t_hist",
     "batch_ess_hist",
     "valid_trained_ess_hist",
     "valid_identity_ess_hist",
-    "sharpen_ess_hist",
-    "smc_ess",
-    "smc_acceptance",
     "mala_acceptance",
-    "sharpen_mala_acceptance",
 )
 _IDENTITY_HISTORY_NAMES = (
     "t_hist",
     "valid_identity_ess_hist",
-    "sharpen_ess_hist",
-    "smc_ess",
-    "smc_acceptance",
     "mala_acceptance",
-    "sharpen_mala_acceptance",
 )
 _METADATA_NAMES = (
     "t",
     "t_start",
     "rg_start",
     "rg_end",
-    "flow_rg",
-    "population_rg",
-    "flow_endpoint",
     "valid_selected_ess",
     "valid_trained_ess",
     "valid_identity_ess",
@@ -59,26 +50,23 @@ _METADATA_NAMES = (
     "initialized_from_identity",
     "selected",
     "attempt_status_hist",
-    "selection_history",
-    "sharpen_ess",
     "objective",
     "elapsed_seconds",
+    "accepted_attempt_seconds",
 )
 _IDENTITY_METADATA_NAMES = (
     "t",
     "t_start",
     "rg_start",
     "rg_end",
-    "population_rg",
     "valid_selected_ess",
     "valid_identity_ess",
     "valid_sample_count",
     "selected",
     "attempt_status_hist",
-    "selection_history",
-    "sharpen_ess",
     "objective",
     "elapsed_seconds",
+    "accepted_attempt_seconds",
 )
 
 
@@ -119,8 +107,6 @@ def _history(path: Path, record: dict) -> None:
         else _HISTORY_NAMES
     )
     values = {name: record[name] for name in names}
-    if record.get("hat_mala_acceptance") is not None:
-        values["hat_mala_acceptance"] = record["hat_mala_acceptance"]
     temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
     with temporary.open("wb") as stream:
         np.savez_compressed(stream, **values)
@@ -395,34 +381,10 @@ def _flow_template(value, static=False, memo=None):
     raise TypeError(f"unsupported static flow value: {_name(value)}")
 
 
-def _regularization_at(config, t):
-    start = np.asarray(config["rg_param_0"], dtype=float)
-    end = np.asarray(config["rg_param_1"], dtype=float)
-    if start.shape != (2,) or end.shape != (2,):
-        raise ValueError("run config regularization parameters must be pairs")
-    return start + float(t) * (end - start)
-
-
-def _check_regularization(config, record) -> None:
-    if not np.allclose(
-        record["rg_start"],
-        _regularization_at(config, record["t_start"]),
-        rtol=1e-6,
-        atol=1e-7,
-    ) or not np.allclose(
-        record["rg_end"],
-        _regularization_at(config, record["t"]),
-        rtol=1e-6,
-        atol=1e-7,
-    ):
-        raise ValueError("stage regularization does not match the run config")
-
-
 def create(run_dir, problem_id, config, samples, flow) -> dict:
     config = _value(config)
-    _regularization_at(config, 0.0)
     run = {
-        "format": "jflows-md-stage-resume-1",
+        "format": FORMAT,
         "problem_id": problem_id,
         "status": "running",
         "config": config,
@@ -459,7 +421,6 @@ def stage(run_dir, run: dict, record: dict, samples) -> dict:
         required = set(_METADATA_NAMES) | set(_HISTORY_NAMES) | {
             "flow",
             "continuation_flow",
-            "hat_mala_acceptance",
         }
     missing = required - set(record)
     if missing:
@@ -469,30 +430,22 @@ def stage(run_dir, run: dict, record: dict, samples) -> dict:
         raise ValueError("invalid accepted-stage schedule")
     if identity and (
         record["selected"] != "identity"
-        or not np.allclose(record["population_rg"], record["rg_end"])
         or record["valid_sample_count"] != samples.shape[0]
     ):
-        raise ValueError("invalid sharpening stage metadata")
+        raise ValueError("invalid identity stage metadata")
     if not identity:
         if (
-            record["flow_endpoint"] != "pre_sharpen"
-            or not np.allclose(record["flow_rg"], record["rg_start"])
-            or not np.allclose(record["population_rg"], record["rg_end"])
-            or record["selected"] not in ("trained", "identity")
-            or record["objective"] not in ("forward_klx", "forward_klxx")
-            or (
-                record["hat_mala_acceptance"] is None
-            ) != (record["objective"] == "forward_klx")
+            record["selected"] not in ("trained", "identity")
+            or record["objective"] not in ("forward_klx", "forward_kll1", "fab", "forward_klxx", "fabx")
             or record["valid_sample_count"] != samples.shape[0]
         ):
-            raise ValueError("invalid sharpening stage metadata")
+            raise ValueError("invalid stage metadata")
         if (
             _flow_template(record["flow"]) != run["flow_template"]
             or _flow_template(record["continuation_flow"])
             != run["flow_template"]
         ):
             raise ValueError("stage flow does not match the run template")
-    _check_regularization(run["config"], record)
     number = len(run["stages"]) + 1
     relative = Path("stages") / f"stage_{number:06d}"
     directory = root / relative

@@ -23,7 +23,7 @@ doc/
 ├── README.md                 # orientation, hierarchy, conventions
 ├── 01-low-level.md           # bundles, potentials, flows, samplers, OpenMM
 ├── 02-medium-level.md        # direct train_* functions and artifacts
-├── 03-high-level.md          # adaptive-staging BG, sharpening, persistence, resume
+├── 03-high-level.md          # adaptive-staging BG, persistence, resume, inference
 ├── 04-smoke-tests.md         # executable contract checks by API area
 └── 05-workflows.md           # complete molecular workflows
 ```
@@ -44,14 +44,15 @@ jflows_md
 │   ├── source / potential
 │   │   ├── Molecular_Source
 │   │   ├── Molecular_Potential
-│   │   └── (e, r) regularization
+│   │   └── Regularized_Molecular_Potential (the (e, r) surrogate)
 │   ├── flow
 │   │   ├── Mixed_Identity
 │   │   └── Mixed_NSF
 │   ├── utils
-│   │   ├── wrapped mixed-domain MALA
-│   │   ├── potential-space SMC
-│   │   ├── flow-proposal AIS
+│   │   ├── wrapped mixed-domain MALA and HMC
+│   │   ├── importance-weight screen
+│   │   ├── flow-proposal SMC (sequential_monte_carlo / flow_target_batch)
+│   │   ├── two-phase FAB SMC (sequential_monte_carlo_fab / flow_fab_batch)
 │   │   └── mixed quench and temper
 │   └── openmm
 │       ├── OpenMM_Potential
@@ -70,10 +71,11 @@ jflows_md
         ├── boltzmann_identity
         ├── boltzmann_forward_KLX_G
         ├── boltzmann_forward_KLXX_G
-        ├── iterate_boltzmann
-        ├── adaptive stage selection / SMC / identity-or-flow / sharpening gates
+        ├── iterate_identity / iterate_boltzmann
+        ├── adaptive stage schedule / trained-or-identity selection / tau_valid gate
         ├── write: create / stage / finish
-        └── load: validate / load / fork / run / stage readers
+        ├── load: validate / load / fork / run / stage readers
+        └── inference: run_inference
 ```
 
 The dependency direction is downward. A high-level molecular generator uses a
@@ -91,6 +93,7 @@ jflows_md/
 ├── artifacts.py
 ├── boltzmann/
 │   ├── __init__.py
+│   ├── inference.py
 │   ├── load.py
 │   └── write.py
 ├── bundle_build/             # optional offline bundle construction
@@ -108,7 +111,8 @@ jflows_md/
     ├── __init__.py
     ├── anneal.py
     ├── quench.py
-    └── rejuvenation.py
+    ├── rejuvenation.py
+    └── screen.py
 ```
 
 ## Core conventions
@@ -116,7 +120,8 @@ jflows_md/
 - JAX molecular coordinates live in `R^p x T^q`: Euclidean coordinates come
   first and periodic torsions come last.
 - `Molecular_Potential` is a reduced internal-coordinate potential,
-  $U(q)=\beta E(x(q))-\log J(q)$.
+  $U(q)=\beta E(x(q))-\log J(q)$; `regularized((e, r))` returns the
+  two-parameter surrogate $U^{\rho}$ used along a regularization path.
 - Obtain the mixed domain and matched source from a loaded target. Do not
   construct application code from `jflows_md.core` objects.
 - `Molecular_Source` is Gaussian in the Euclidean block and uniform on the
@@ -125,14 +130,30 @@ jflows_md/
   molecular proposals from source samples with `flow.inv(x)`.
 - Random JAX entry points take explicit PRNG keys. Split or fold keys for
   logically independent operations.
+- Primitive kernels use `dt` and `steps` (`mixed_mala`) or `dt`,
+  `leapfrog_steps`, and `trajectories` (`mixed_hmc`); `mixed_quench_and_temper`
+  uses `mc_dt` and `mc_steps`; the SMC routines, the trainers, and the
+  generators split the Langevin budget into `mc_steps_1` (the intermediate SMC
+  levels only) and `mc_steps_2` (every other rejuvenation: the last SMC level
+  at the target, the quench-and-temper rows of the mixture batch, and the
+  quench-and-temper pool) and use `steps_total`, `batch_size`, and
+  `pool_size`.
 - `chunks` is a number of row partitions. It controls eager JAX work in mixed
-  MALA, SMC, AIS, quench and temper, and validation-weight evaluation.
-- Mixed Langevin is MALA and always includes the Metropolis correction.
-- The regularization state is the pair `(e, r)`: an energy threshold in kJ/mol
-  and a nonbonded pair-distance floor in nm.
+  MALA and HMC, the population SMC, quench and temper, and validation-weight
+  evaluation.
+- Mixed Langevin is MALA and always includes the Metropolis correction; every
+  SMC level rejuvenates with it, at the target in `sequential_monte_carlo`
+  (the forward KL family) and at the level's own distribution of the path in
+  `sequential_monte_carlo_fab` (FAB), whose intermediate levels therefore
+  differentiate the flow.
+- Every ESS and every resampling weight is screened
+  (`jflows_md.utils.screen`): infinite log weights and the `screen_fraction`
+  largest get weight zero; `SCREEN_FRACTION = 1e-4` is the one default of
+  training and inference.
 - Native OpenMM potentials act on Cartesian positions in nm. They do not
   include the internal-coordinate Jacobian.
-- Direct artifacts and complete-stage persistence are separate APIs.
+- Direct artifacts, complete-stage persistence, and the inference scheme are
+  separate APIs.
 
 ## Reading routes
 
@@ -140,7 +161,8 @@ jflows_md/
   with [Low-level interfaces](01-low-level.md).
 - Training one fixed molecular stage: continue to
   [Medium-level interfaces](02-medium-level.md).
-- Advancing through stages while sharpening the regularization: continue to
+- Advancing through accepted stages toward the molecular target, or replaying
+  a stored run on fresh source particles: continue to
   [High-level interfaces](03-high-level.md).
 - Finding the executable contract for one feature: use
   [Smoke tests](04-smoke-tests.md).

@@ -2,7 +2,8 @@
 
 The low level contains the molecular objects and numerical kernels used to
 assemble custom mixed-domain pipelines. It covers frozen bundles, the JAX
-source and potential, mixed normalizing flows, mixed MALA/SMC/AIS/QT, and the
+source and potential, mixed normalizing flows, mixed MALA and HMC, the
+importance-weight screen, the flow-proposal SMC, quench and temper, and the
 independent native OpenMM backend.
 
 ## Public imports
@@ -10,14 +11,21 @@ independent native OpenMM backend.
 ```python
 from jflows_md.system import Molecular_Bundle, available_bundles
 from jflows_md.source import Molecular_Source
-from jflows_md.potential import KB_KJ_MOL_K, Molecular_Potential
+from jflows_md.potential import (
+    KB_KJ_MOL_K, Molecular_Potential, Regularized_Molecular_Potential,
+)
 from jflows_md.flow import Mixed_Identity, Mixed_NSF
 from jflows_md.utils import (
     mixed_mala_step,
     mixed_mala,
+    mixed_hmc_step,
+    mixed_hmc,
+    screen_log_weight,
+    compute_ESS_log,
+    linear_weights_from_log,
+    SCREEN_FRACTION,
     sequential_monte_carlo,
-    potential_space_smc,
-    annealed_importance_sampling,
+    flow_target_batch,
     mixed_quench_and_temper,
     wrapped_normal_relative_error_bound,
 )
@@ -95,23 +103,18 @@ bundle/
 
 </div>
 
-The source checkout contains seven audited targets:
+The source checkout contains five targets:
 
 | Bundle | Atoms / dimension | Mixed domain | Fixed centers |
 |---|---:|---|---:|
-| `adp_ff96_obc1` | 22 / 60 | `R^42 x T^18` | 1 |
-| `glycerol_gaff2_am1bcc_obc1` | 14 / 36 | `R^25 x T^11` | 0 |
-| `diethanolamine_gaff2_am1bcc_obc1` | 18 / 48 | `R^33 x T^15` | 0 |
-| `nma_ff96_obc1` | 12 / 30 | `R^21 x T^9` | 0 |
-| `s_2_butanol_gaff2_am1bcc_obc1` | 15 / 39 | `R^28 x T^11` | 1 |
-| `rr_2_3_butanediol_gaff2_am1bcc_obc1` | 16 / 42 | `R^31 x T^11` | 2 |
-| `cyclohexane_gaff2_am1bcc_obc1` | 18 / 48 | `R^33 x T^15` | 0 |
+| `alanine_dipeptide_ff96_obc1` | 22 / 60 | `R^42 x T^18` | 1 |
+| `methane_gaff2_am1bcc_obc1` | 5 / 9 | `R^7 x T^2` | 0 |
+| `ethane_gaff2_am1bcc_obc1` | 8 / 18 | `R^13 x T^5` | 0 |
+| `propane_gaff2_am1bcc_obc1` | 11 / 27 | `R^19 x T^8` | 0 |
+| `n_butane_gaff2_am1bcc_obc1` | 14 / 36 | `R^25 x T^11` | 0 |
 
-The ff96 targets are ADP and NMA; the other five use GAFF2/AM1-BCC. All use
-OBC1/ACE, `NoCutoff`, and no constraints. The four candidate manifests pin
-AmberTools 26.0.0 and structure/parameter provenance: the alcohol `parmchk2`
-files are empty, while cyclohexane records zero-penalty `c6` transfers from
-the GAFF2 `c3` types. Installed wheels contain code only, so a wheel user
+Alanine dipeptide uses ff96; the alkanes use GAFF2/AM1-BCC. All use
+OBC1/ACE, `NoCutoff`, and no constraints. Installed wheels contain code only, so a wheel user
 downloads or prepares bundle data separately. Use
 `available_bundles(root)` to list selectable directory names, then pass one of
 those names and the same `root` to `Molecular_Bundle.load`,
@@ -131,7 +134,7 @@ periodic block and are wrapped to `[-pi, pi)`. The target owns the public
 domain object:
 
 ```python
-target = Molecular_Potential.from_bundle("glycerol_gaff2_am1bcc_obc1")
+target = Molecular_Potential.from_bundle("alanine_dipeptide_ff96_obc1")
 domain = target.domain
 
 dimension = target.dimension
@@ -161,8 +164,8 @@ signed-volume tests. An empty list leaves molecular support unrestricted.
 
 New bundle construction requires this choice explicitly; it does not infer
 stereochemistry from a target name or molecular graph. The narrow
-backward-compatibility exception is a target-only call for `adp`, `glycerol`,
-or `diethanolamine` with every new coordinate option at its default; that call
+backward-compatibility exception is a target-only call for `alanine_dipeptide`
+with every new coordinate option at its default; that call
 reproduces the historical schema-v2 coordinate dictionary exactly. Any
 non-default coordinate option selects the explicit schema-v3 route. Pass the
 Z-matrix placement and every fixed center to `write_bundle`:
@@ -213,11 +216,8 @@ signs from the accepted reference configuration. These restrictions change
 only the internal-coordinate support and Jacobian; the Amber/OBC force-field
 arrays and Cartesian physical energy are unchanged.
 
-The curated NMA bundle leaves the ACE-C-N-C torsion periodic, so both cis and
-trans regions remain in support. The curated cyclohexane bundle has no fixed
-center: its ring-closing force-field bond is retained while chair inversion
-remains accessible. These policies are target-specific and do not imply
-automatic stereochemistry or ring-state inference for arbitrary molecules.
+These policies are target-specific and do not imply automatic
+stereochemistry inference for arbitrary molecules.
 
 Schema-v2 bundles remain readable. Their zero- or one-center singleton fields
 are normalized to the same runtime representation, so existing achiral and
@@ -252,24 +252,30 @@ mean and scales the Euclidean variance by
 
 ```python
 target = Molecular_Potential.from_bundle(
-    "adp_ff96_obc1",
+    "alanine_dipeptide_ff96_obc1",
     temperature_kelvin=300.0,
 )
 ```
+
+`Molecular_Potential(bundle, *, temperature_kelvin=None)` is the constructor
+behind `from_bundle(path_or_name, *, root=None, verify=True,
+temperature_kelvin=None)`. With `temperature_kelvin=None` the bundle
+temperature is used.
 
 For internal coordinates $q$, the target evaluates
 
 $$
 \begin{aligned}
-U(q)&=\beta E(x(q))-\log J(q), \\
+U(q)&=R\bigl(\beta E(x(q))\bigr)-\log J(q), \\
 \beta&=\frac{1}{k_{\mathrm B}T}.
 \end{aligned}
 $$
 
 `E` is the pure-JAX Amber bonded/nonbonded plus OBC1/ACE energy in kJ/mol.
-`J` is the coordinate Jacobian for the rigid-motion-quotient chart. The
-potential consumes `[N,d]` and returns `[N]`, so it can be used by generic
-`jflows` losses and potential algebra.
+`J` is the coordinate Jacobian for the rigid-motion-quotient chart. $R$ is
+the energy regularization described below. The potential consumes `[N,d]`
+and returns `[N]`, so it can be used by generic `jflows` losses and potential
+algebra.
 
 `KB_KJ_MOL_K = 0.00831446261815324` is the package conversion constant used
 for $\beta$ when energies are measured in kJ/mol and temperature in kelvin.
@@ -281,11 +287,13 @@ for $\beta$ when energies are measured in kJ/mol and temperature in kelvin.
 <tr><th>Call</th><th>Meaning</th><th>Return</th></tr>
 </thead>
 <tbody>
-<tr><td><code>target(q)</code></td><td>reduced internal-coordinate potential</td><td><code>[N]</code></td></tr>
+<tr><td><code>target(q)</code></td><td>reduced internal-coordinate potential <code>beta E(x(q)) - log J(q)</code></td><td><code>[N]</code></td></tr>
 <tr><td><code>target.grad(q)</code></td><td>JAX gradient of the reduced potential</td><td><code>[N,d]</code></td></tr>
 <tr><td><code>target.cartesian(q)</code></td><td>canonical Cartesian representative</td><td><code>[N,A,3]</code> in nm</td></tr>
-<tr><td><code>target.physical_energy(q)</code></td><td>unreduced Cartesian energy</td><td><code>[N]</code> in kJ/mol</td></tr>
-<tr><td><code>target.energy_terms(q)</code></td><td>reduced force-field terms, Jacobian, and total potential</td><td>dictionary of <code>[N]</code> arrays</td></tr>
+<tr><td><code>target.physical_energy(q)</code></td><td>raw Cartesian force-field energy</td><td><code>[N]</code> in kJ/mol</td></tr>
+<tr><td><code>target.reduced_energy(q)</code></td><td>reduced energy <code>beta E(x(q))</code> without the Jacobian</td><td><code>[N]</code></td></tr>
+<tr><td><code>target.energy_terms(q)</code></td><td>reduced force-field terms, <code>logdet</code>, and the total <code>potential</code></td><td>dictionary of <code>[N]</code> arrays</td></tr>
+<tr><td><code>target.regularized((e, r))</code></td><td>the <code>Regularized_Molecular_Potential</code> <code>U^rho</code> (see below)</td><td>potential</td></tr>
 <tr><td><code>target.reference_internal()</code></td><td>bundle reference in the mixed chart</td><td><code>[d]</code></td></tr>
 <tr><td><code>target.support_mask(x)</code></td><td>stereochemical support of Cartesian frames</td><td>Boolean batch</td></tr>
 <tr><td><code>target.source()</code></td><td>temperature-matched molecular source</td><td><code>Molecular_Source</code></td></tr>
@@ -294,47 +302,33 @@ for $\beta$ when energies are measured in kJ/mol and temperature in kelvin.
 
 </div>
 
-### `(e, r)` regularization
+### The regularized potential `U^rho`
 
 ```python
-soft = target.regularized((50.0, 0.10))
+soft = target.regularized((50.0, 0.25))   # rho = (e [kJ/mol], r [nm])
 ```
 
-The pair is `(energy_threshold_kj_mol, pair_distance_floor_nm)`. The distance
-floor affects only regular and exception Amber Coulomb/Lennard-Jones pair
-distances. Bonded terms, OBC1/ACE, the coordinate map, and the physical target
-remain unchanged.
-
-Let $E_r$ be the floor-aware energy and $E_{\mathrm{ref},r}$ its value at the
-bundle reference. With $d=E_r-E_{\mathrm{ref},r}$, the mapped excess is
-
-$$
-R_e(d)=
-\begin{cases}
-d, & d\le e, \\
-e\left[1+\log(d/e)\right], & d>e.
-\end{cases}
-$$
-
-The regularized reduced potential is
-
-$$
-U_{\mathrm{rg}}(q)
-=\beta\left[E_{\mathrm{ref},r}+R_e(d)\right]-\log J(q).
-$$
-
-`soft(q)` evaluates that reduced surrogate. `soft.regularized_energy(q)`
-returns the mapped Cartesian energy, while `soft.physical_energy(q)` still
-returns the original physical energy. Regularization defines a training and
-sampling potential; it does not mutate `target`.
+`Molecular_Potential.regularized(rg_param)` returns the
+`Regularized_Molecular_Potential` of the manuscript: the regular and exception
+nonbonded pair distances are floored at `r`, the excess of the floored energy
+over the floored energy of the bundle reference geometry is compressed by
+`C_e(dE) = dE` below `e` and `e (1 + log(dE / e))` above it; the reduced
+potential is `beta (E_star + C_e) - log J`.
+`soft.regularized_energy(q)` is `E_star + C_e(dE)` in kJ/mol,
+`soft.physical_energy(q)` the raw energy, and `soft.reference_energy_kj_mol`
+the floored reference energy. `e -> inf, r -> 0` recovers `target`. The
+generators build their diagonal stage targets `(1 - t) U_0 + t U^{rho_t}`
+from this object along a regularization path (see `doc/03-high-level.md`).
 
 ## Mixed flows
 
 ### `Mixed_Identity`
 
 `Mixed_Identity(domain)` wraps periodic coordinates and otherwise preserves
-the input. Its forward and inverse log-Jacobians are zero. It is the explicit
-identity fallback used by molecular Boltzmann stages.
+the input. Its forward and inverse log-Jacobians are zero and `zeros()`
+returns the flow itself. The molecular Boltzmann generators compare a trained
+map against `flow.zeros()` of the supplied architecture, so `Mixed_Identity`
+is the flow-shaped identity for custom pipelines and tests.
 
 ### `Mixed_NSF`
 
@@ -407,64 +401,147 @@ a chunk-weighted mean acceptance history with shape `(steps,)`.
 
 `wrapped_normal_relative_error_bound(dt, image_radius)` reports the analytic
 truncation bound used to choose the periodic image radius. Mixed MALA is always
-adjusted and has no ULA mode.
+adjusted and has no ULA mode. A non-finite Metropolis log-acceptance is
+mapped to `-inf`, so that proposal is rejected and the input particle
+retained.
 
-## Potential-space SMC
+## Wrapped mixed-domain HMC
 
 ```python
-samples, level_ess, level_acceptance = sequential_monte_carlo(
+y, accepted = mixed_hmc_step(
+    key, samples, target, target.domain,
+    dt=1e-3,
+    leapfrog_steps=10,
+)
+
+y, acceptance_hist = mixed_hmc(
+    key, samples, target, target.domain,
+    dt=1e-3,
+    leapfrog_steps=10,
+    trajectories=1,
+    chunks=8,
+)
+```
+
+One trajectory draws a random momentum for every coordinate, integrates the
+Hamiltonian flow by `leapfrog_steps` leapfrog steps of size `dt` with the
+periodic coordinates wrapped after every position update (a volume-preserving
+map on the torus, so the accept/reject test is the Euclidean one), and accepts
+the endpoint with probability `min(1, exp(H(start) - H(end)))`. A non-finite
+trajectory is rejected. `mixed_hmc` runs `trajectories` trajectories per
+particle, chunked along the rows, and returns the moved particles and the
+mean acceptance per trajectory with shape `(trajectories,)`, the same
+contract as `mixed_mala`. The flow-proposal SMC uses one trajectory on each
+intermediate level.
+
+## Importance-weight screen
+
+```python
+screened = screen_log_weight(log_weight, fraction=SCREEN_FRACTION)
+ess = compute_ESS_log(log_weight, fraction=SCREEN_FRACTION)
+weights = linear_weights_from_log(log_weight, fraction=SCREEN_FRACTION)
+```
+
+`jflows_md.utils.screen` carries the screen that every ESS and every
+resampling weight in `jflows_md` passes through. `screen_log_weight` sets
+infinite or NaN log weights and the `fraction` largest ones to `-inf`, so
+they get weight zero; at least one weight is removed
+(`k = max(1, ceil(fraction * count))`). A log weight far above the rest marks
+a hole of the pushforward density at an ordinary target point; kept, it would
+dominate an ESS and be copied into most of a resampled population.
+`compute_ESS_log` and `linear_weights_from_log` are the `jflows` reductions
+applied to the screened log weights: the normalized ESS in `[0, 1]` and the
+normalized linear weights for resampling.
+
+Every module imports these two names from this module, so a log weight is
+screened exactly once, at the point where it is reduced to an ESS or to
+resampling weights, and never at the point where it is created. One default,
+`SCREEN_FRACTION = 1e-4`, serves the trainers, the generators, the SMC, quench
+and temper, and `run_inference` alike. Every caller passes the fraction it
+was given.
+
+## Flow-proposal SMC
+
+```python
+samples, proposal, proposal_log_weights = sequential_monte_carlo(
     key,
     samples,
     source,
     target,
+    flow,
     ladder=8,
-    mc_dt=1e-4,
-    mc_steps=10,
+    mc_dt=1e-3,
+    mc_steps_1=20,
+    mc_steps_2=100,
     mc_image_radius=3,
     domain=target.domain,
     chunks=8,
+    screen_fraction=SCREEN_FRACTION,
 )
 ```
 
-The uniform schedule uses levels `1/ladder, ..., 1`. At each level SMC:
+`sequential_monte_carlo` (alias `smc`) manufactures target samples from
+source samples through a trained flow, the molecular counterpart of
+`jflows.utils.sequential_monte_carlo`. The flow is always the inverse map
+`G` (target -> source), so the source particles are pushed through
+`flow.inv_and_ladj` and wrapped; the pushforward and its full
+proposal-to-target log weight
 
-1. applies the incremental geometric-bridge weight;
-2. records normalized ESS;
-3. resamples back to the original particle count; and
-4. applies mixed MALA at the matching intermediate potential.
-
-The return shapes are `[N,d]`, `(ladder,)`, and `(ladder, mc_steps)`.
-`potential_space_smc(..., t_list=...)` uses caller-supplied absolute levels
-instead of a uniform ladder.
-
-## Flow-proposal AIS
-
-```python
-samples, initial_log_weights = annealed_importance_sampling(
-    key,
-    source_samples,
-    source,
-    target,
-    flow,
-    ladder=8,
-    mc_dt=1e-4,
-    mc_steps=10,
-    domain=target.domain,
-    chunks=8,
-    return_initial_log_weights=True,
-)
+```text
+log w = U_source(x) - U_target(G^{-1}(x)) + log|det J_{G^{-1}}(x)|
 ```
 
-The molecular flow is G-native, so the initial proposal is `flow.inv(x)`.
-The routine divides the proposal log weight across `ladder` resampling levels,
-but rejuvenates at the final target after every level. It is therefore the
-same score-free flow-proposal surrogate used by generic `jflows`, not exact
-potential-space AIS.
+are kept. Each of the `ladder` levels `m = 1, ..., M`:
+
+1. reweights the current particles by the `1/M`-th power of the
+   proposal-to-target weight (the pushforward weight at level 1, the weight
+   refreshed through `G` at the moved particles afterwards);
+2. resamples with the screened weights
+   (`linear_weights_from_log(log_weight, screen_fraction)`); and
+3. rejuvenates under `target` with wrapped MALA steps of size `mc_dt`:
+   `mc_steps_1` steps on the levels `1 .. M-1`, `mc_steps_2` steps on the
+   level `M`. The energy of the resampled particles is carried into the
+   kernel, so each MALA step costs one energy-and-force evaluation.
+
+Rejuvenation targets the final target at every level, so the routine is the
+SMC target surrogate of the trainers rather than an exact sampler on the
+geometric path. The result is `(samples, proposal, proposal_log_weights)`:
+the target samples, the pushforward the levels started from, and the full
+proposal-to-target log weights on that pushforward (the batch ESS diagnostic
+of the trainers). With `domain=None` the domain is taken from `target.domain`
+or `flow.domain`.
+
+`flow_target_batch(key, samples, source, target, flow, domain, *, ladder=1,
+mc_dt=1e-3, mc_steps_1=100, mc_steps_2=100, mc_image_radius=3,
+screen_fraction=SCREEN_FRACTION)`
+is the pure, single-chunk form of the same levels and kernels, traceable
+inside a scan; the trainers call it in every optimizer step.
+`sequential_monte_carlo` is its eager, chunked form for populations, with the
+pushforward, the weights, and the rejuvenations run chunk by chunk.
+
+`sequential_monte_carlo_fab` (alias `smc_fab`) and `flow_fab_batch` take the
+same arguments and are the exact two-phase form used by the FAB trainers.
+Phase 1 is the routine above. Phase 2 runs `ladder` further levels along
+`rho_k = pi (pi / nu)^(k/M)`, `k = 1, ..., M`, where `nu` is the pushforward
+density of the source through `G^{-1}`,
+
+```text
+log nu(y) = -U_source(G(y)) + log|det J_G(y)|
+```
+
+each level reweighting by `log(pi / nu) / M`, resampling with the screened
+weights, and rejuvenating under its own `rho_k` (`_path_potential`, the
+potential `(1 - s) U_target - s log nu` at `s = -k/M`) with `mc_steps_1`
+MALA steps, `mc_steps_2` on the last level, whose distribution is
+`pi^2 / nu`. These levels evaluate `log nu` through the flow, so a MALA step
+there costs a flow inverse and its Jacobian. The result is
+`(samples, proposal, proposal_log_weights)` with the phase-2 particles and
+phase 1's pushforward and log weights.
 
 ## Mixed quench and temper
 
 ```python
-hat_samples, acceptance_hist = mixed_quench_and_temper(
+hat_pool, acceptance_hist = mixed_quench_and_temper(
     key,
     samples,
     target,
@@ -472,24 +549,44 @@ hat_samples, acceptance_hist = mixed_quench_and_temper(
     melt=1.0,
     opt_alpha=1e-2,
     opt_steps=200,
-    mc_dt=1e-4,
-    mc_steps=50,
+    mc_dt=1e-3,
+    mc_steps=100,
     mc_image_radius=3,
     chunks=8,
+    coeff_qt=0.0,
+    screen_fraction=SCREEN_FRACTION,
 )
 ```
 
-The routine optionally adds Gaussian noise to the Euclidean block and redraws
-the torsions uniformly, minimizes each chunk with L-BFGS and Armijo search,
-wraps the result, then tempers with mixed MALA. It returns the final population
-and the MALA acceptance history.
+The construction executes:
+
+```text
+input population
+  -> (melt > 0) Gaussian scatter of the Euclidean block with standard
+     deviation melt, uniform redraw of the periodic block
+  -> per-particle L-BFGS quench into the basins of target
+     (alpha=opt_alpha, steps=opt_steps, Armijo search), wrapped
+  -> mc_steps MALA steps under target
+  -> (coeff_qt > 0) resample the tempered particles by
+     exp(-coeff_qt * target(y)) with screened weights, then mc_steps further
+     MALA steps under target
+  -> pool and MALA acceptance history (of the last MALA run)
+```
+
+`coeff_qt > 0` weights each tempered particle by `exp(-coeff_qt U(y))`,
+resamples, and rejuvenates the pool again; the default `0` returns the
+tempered pool. A tempered particle left at high energy, such as a clash the
+quench carried away along the singular nonbonded core, is removed by the
+resampling. `chunks` partitions the quench, the weights, and both MALA runs.
+The KLXX trainer builds its quench-and-temper pool with this routine.
 
 ## Chunking semantics
 
 `chunks` always means a number of row partitions, not a row count. Larger
 values reduce the number of rows entering one eager compiled kernel. The same
-spelling is used for mixed MALA, SMC, AIS, quench and temper, and high-level
-validation weights.
+spelling is used for mixed MALA and HMC, the population SMC, quench and
+temper, and the high-level validation weights. `flow_target_batch` is the
+single-chunk form and has no `chunks` argument.
 
 Chunking does not change the target distribution or objective. Different
 chunk counts consume JAX keys in different partition patterns, so stochastic
@@ -504,13 +601,20 @@ OpenMM contexts.
 ```python
 from jflows_md.openmm import OpenMM_Potential, langevin, parallel_tempering
 
-target_mm = OpenMM_Potential.from_bundle("glycerol_gaff2_am1bcc_obc1")
-soft_mm = target_mm.regularized((50.0, 0.10))
+target_mm = OpenMM_Potential.from_bundle(
+    "alanine_dipeptide_ff96_obc1",
+    temperature_kelvin=None,
+)
 ```
 
-The native reduced potential is `beta E(x)`. It does not include `-log J`
-because its argument is Cartesian position rather than the mixed quotient
-coordinate.
+The native reduced potential is `beta E(x)`, evaluated on the OpenMM energy
+for reference checks. It does not include `-log J` because its argument is
+Cartesian position rather than the mixed quotient coordinate.
+`OpenMM_Potential(bundle, *, temperature_kelvin=None)` also accepts a bundle
+name or path in place of a loaded `Molecular_Bundle`, and
+`target_mm.regularized((e, r))` is the OpenMM form of the `(e, r)` surrogate
+(pair floor and reference-relative compression as OpenMM custom forces), used
+by the smoke tests to check the JAX surrogate's energies and forces.
 
 <div align="center">
 
@@ -520,27 +624,24 @@ coordinate.
 </thead>
 <tbody>
 <tr><td><code>target_mm.create_system()</code></td><td>fresh OpenMM System</td><td><code>openmm.System</code></td></tr>
-<tr><td><code>target_mm.physical_energy(x)</code></td><td>physical Cartesian energy</td><td>kJ/mol scalar or batch</td></tr>
-<tr><td><code>target_mm.forces(x)</code></td><td>OpenMM force of the active potential</td><td>kJ/mol/nm Cartesian array</td></tr>
-<tr><td><code>target_mm(x)</code></td><td>reduced Cartesian potential</td><td><code>beta E(x)</code></td></tr>
-<tr><td><code>target_mm.regularized((e,r))</code></td><td>independent OpenMM realization of the JAX surrogate</td><td>regularized potential</td></tr>
-<tr><td><code>soft_mm.regularized_energy(x)</code></td><td>active mapped Cartesian energy</td><td>kJ/mol scalar or batch</td></tr>
+<tr><td><code>target_mm.physical_energy(x, platform=None)</code></td><td>physical Cartesian energy</td><td>kJ/mol scalar or batch</td></tr>
+<tr><td><code>target_mm.forces(x, platform=None)</code></td><td>OpenMM force of the bundle System</td><td>kJ/mol/nm Cartesian array</td></tr>
+<tr><td><code>target_mm.reduced_energy(x, platform=None)</code></td><td>regularized reduced energy</td><td><code>R(beta E(x))</code></td></tr>
+<tr><td><code>target_mm(x, platform=None)</code></td><td>same as <code>reduced_energy</code></td><td><code>R(beta E(x))</code></td></tr>
 </tbody>
 </table>
 
 </div>
 
-The regularized system replaces Amber regular/exception pair interactions by
-the same floor-aware expression as the JAX implementation, then wraps the
-complete energy in the same reference-relative logarithmic map. OpenMM
-differentiates that composed energy to produce regularized forces. There are no
+Each evaluation builds a fresh System and Context from the bundle's
+`system.xml`; `platform` selects the OpenMM platform by name. There are no
 JAX callbacks in native simulation.
 
 ### Native Langevin
 
 ```python
 trajectory, energy = langevin(
-    soft_mm,
+    target_mm,
     positions_nm=None,
     steps=10000,
     sample_interval=100,
@@ -580,16 +681,22 @@ thermostats.
 
 The returns have shapes `(rounds, replicas, A, 3)`, `(rounds, replicas)`, and
 `(replicas-1,)`. The last array is the acceptance fraction for each adjacent
-temperature pair. Either a physical or regularized `OpenMM_Potential` can be
-passed to both native samplers.
+temperature pair. Both native samplers integrate the bundle's OpenMM System
+through `target_mm.create_system()` and report the raw OpenMM potential
+energy in kJ/mol; the energy cut and cap act on `reduced_energy` evaluations,
+not on the integrator's forces.
 
 ## Executable references
 
 - `smoke/test_bundles.py`: bundle contract and named targets.
 - `smoke/test_molecular_potential.py`: JAX energy, force, coordinate, and
-  temperature behavior.
-- `smoke/test_regularization.py`: `(e,r)` equations.
+  temperature behavior, and the energy cut and cap.
 - `smoke/test_mixed_nsf.py`: mixed flow inversion, Jacobians, and seams.
 - `smoke/test_stereochemistry.py`: legacy and multi-center coordinate support.
-- `smoke/test_support_and_utils.py`: mixed MALA, SMC, AIS, QT, and support.
-- `smoke/test_openmm.py`: JAX/OpenMM parity and both native samplers.
+- `smoke/test_smc_hmc.py`: mixed HMC, the flow-proposal SMC and the FAB SMC
+  in both forms,
+  the importance-weight screen, and quench and temper with `coeff_qt`.
+- `smoke/test_float32_alanine_dipeptide_compile.py`: float32 alanine dipeptide energy and
+  gradient compilation and one-step mixed MALA.
+- `smoke/test_openmm.py`: JAX/OpenMM parity of the physical and regularized
+  energies and both native samplers.

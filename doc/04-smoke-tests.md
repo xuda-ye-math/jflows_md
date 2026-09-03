@@ -13,8 +13,9 @@ XLA_PYTHON_CLIENT_PREALLOCATE=false \
 python smoke/run_all.py
 ```
 
-`run_all.py` starts every smoke module in a fresh Python subprocess. The
-opt-in compilation benchmark is intentionally excluded.
+`run_all.py` starts every module of its `TESTS` tuple in a fresh Python
+subprocess, in the order of the table below, with a 300 s timeout each, and
+prints `ALL jflows_md SMOKE TESTS PASSED` at the end.
 
 ## Test map
 
@@ -25,27 +26,19 @@ opt-in compilation benchmark is intentionally excluded.
 <tr><th>Module</th><th>Primary contract</th></tr>
 </thead>
 <tbody>
-<tr><td><code>test_bundles.py</code></td><td>client-free JAX/OpenMM backend report, six-file bundle loading, named targets, metadata, and non-overwriting builder behavior</td></tr>
-<tr><td><code>test_api_consistency.py</code></td><td>public v0.5 namespace, signatures, aliases, and retired layout</td></tr>
-<tr><td><code>test_boltzmann_identity.py</code></td><td>flow-free adaptive-staging identity runs with active sharpening and two MALA endpoints</td></tr>
-<tr><td><code>test_boltzmann_identity_artifacts.py</code></td><td>identity stage save/load/resume with sharpening histories and no flow files</td></tr>
+<tr><td><code>test_bundles.py</code></td><td>package version and public namespace, client-free JAX/OpenMM backend report, six-file bundle loading, the five named targets, external-root selection, and non-overwriting builder behavior</td></tr>
+<tr><td><code>test_api_consistency.py</code></td><td>builder signatures; trainer and generator parameter defaults (<code>initialize_from_identity</code>, <code>u_clip</code>, <code>g_clip</code>, <code>lr_warmup</code>, <code>screen_fraction</code>, <code>coeff_qt</code>); the exact <code>boltzmann_identity</code> signature; the five trainers and five trained generators carrying <code>mc_steps_1</code> and <code>mc_steps_2</code>, the FAB losses without <code>coeff_lambda</code>; a two-step <code>train_forward_KLX_G</code> on <code>Mixed_Identity</code>; float32 bundle sources</td></tr>
 <tr><td><code>test_artifacts.py</code></td><td>template-based mixed-flow, sample, and history round trips</td></tr>
-<tr><td><code>test_jflows_compatibility.py</code></td><td>the live generic <code>jflows</code> interfaces consumed by <code>jflows_md</code></td></tr>
-<tr><td><code>test_edge_cases.py</code></td><td>raw mixed-domain sampler equations and numerical edge cases</td></tr>
 <tr><td><code>test_mixed_nsf.py</code></td><td>mixed flow inversion, log-Jacobians, wrapping, masks, and seam behavior</td></tr>
-<tr><td><code>test_jflows_md_chunking.py</code></td><td>fixed-shape eager chunks, SMC ladder controllers, and chunk equivalence</td></tr>
-<tr><td><code>test_float32_training.py</code></td><td>default-float32 direct trainer compilation and execution</td></tr>
-<tr><td><code>test_initialization.py</code></td><td>supplied-flow preservation, identity initialization, and stage starts</td></tr>
-<tr><td><code>test_boltzmann_checkpoints.py</code></td><td>complete-stage persistence, validation, loading, forking, and post-sharpen resume</td></tr>
-<tr><td><code>test_boltzmann_integration.py</code></td><td>actual computed-stage interruption and resumed-run equivalence</td></tr>
-<tr><td><code>test_mixed_training.py</code></td><td>direct KLX/KLXX plus bounded adaptive-staging Boltzmann execution</td></tr>
-<tr><td><code>test_sharpening_gate.py</code></td><td>flow ESS and sharpening ESS gates with stage shrinking</td></tr>
-<tr><td><code>test_molecular_potential.py</code></td><td>JAX energies, forces, quotient Jacobian, temperature scaling, and seven-bundle parity</td></tr>
-<tr><td><code>test_regularization.py</code></td><td>the exact <code>(e,r)</code> energy map and pair-floor derivatives</td></tr>
-<tr><td><code>test_openmm.py</code></td><td>JAX/OpenMM energy and regularized-force parity plus native Langevin and parallel tempering</td></tr>
-<tr><td><code>test_stereochemistry.py</code></td><td>schema-2 compatibility; NMA cis/trans, cyclohexane ring, one-center S-butanol, two-center RR-butanediol, CIP rejection, support, and flow checks</td></tr>
-<tr><td><code>test_support_and_utils.py</code></td><td>seven-target stereochemical support, mixed MALA, SMC, AIS, and quench and temper</td></tr>
-<tr><td><code>test_float32_glycerol_compile.py</code></td><td>bounded real-glycerol energy, flow, and trainer compilation</td></tr>
+<tr><td><code>test_smc_hmc.py</code></td><td>mixed HMC on the torus, <code>flow_target_batch</code> with and without rejuvenation (zero steps reduce the levels to reweight and resample), agreement of <code>sequential_monte_carlo</code> with the batch form, <code>flow_fab_batch</code> and <code>sequential_monte_carlo_fab</code> sharing the phase-1 proposal and weights, <code>screen_log_weight</code>, screened ESS and resampling weights, and quench and temper with <code>coeff_qt</code> (rejected without a source)</td></tr>
+<tr><td><code>test_float32_training.py</code></td><td>default-float32 guarded Adam, global gradient clipping, learning-rate warmup, a two-step <code>train_forward_KLX_G</code> with monitor, and the batch ESS against the screened ESS of the pushforward weights</td></tr>
+<tr><td><code>test_initialization.py</code></td><td>the keyword-only <code>initialize_from_identity</code> defaults of the trainers (<code>False</code>) and generators (<code>True</code>)</td></tr>
+<tr><td><code>test_boltzmann_md.py</code></td><td>the identity, KLX, KLXX, KLL1, FAB, and FABX generators on a toy mixed-domain target, rejection of a retired policy key and of an unknown objective, complete-stage persistence through <code>run</code>/<code>validate</code>/<code>load</code>, and <code>run_inference</code> on the stored run</td></tr>
+<tr><td><code>test_regularization.py</code></td><td>the regularized potential <code>U^rho</code> on the NMA bundle (limits, reference geometry, compression, pair floor) and the diagonal stage targets of a regularization path on a fixed schedule, their persistence, and their replay by <code>run_inference</code></td></tr>
+<tr><td><code>test_molecular_potential.py</code></td><td>JAX energies, forces, quotient Jacobian, temperature scaling, empty force families, and five-bundle parity with the stored OpenMM references</td></tr>
+<tr><td><code>test_openmm.py</code></td><td>JAX/OpenMM parity of the physical and regularized energies plus native Langevin and parallel tempering</td></tr>
+<tr><td><code>test_stereochemistry.py</code></td><td>schema-2 compatibility of the alanine dipeptide chart, its one fixed center, and the rejection of invalid stereochemical specifications</td></tr>
+<tr><td><code>test_float32_alanine_dipeptide_compile.py</code></td><td>float32 alanine dipeptide energy and gradient compilation, chart-boundary and saturated-angle behavior, the chiral ADP chart, and one-step mixed MALA</td></tr>
 </tbody>
 </table>
 
@@ -60,12 +53,10 @@ Use these when changing bundles, potentials, flows, or sampling kernels:
 ```text
 test_bundles.py
 test_molecular_potential.py
-test_regularization.py
 test_mixed_nsf.py
-test_edge_cases.py
 test_stereochemistry.py
-test_support_and_utils.py
-test_jflows_md_chunking.py
+test_smc_hmc.py
+test_float32_alanine_dipeptide_compile.py
 test_openmm.py
 ```
 
@@ -76,28 +67,22 @@ Use these when changing direct training or simple artifacts:
 ```text
 test_float32_training.py
 test_initialization.py
-test_mixed_training.py
 test_artifacts.py
-test_float32_glycerol_compile.py
 ```
 
 ### High level
 
-Use these when changing adaptive-staging logic, sharpening, or persistence:
+Use these when changing adaptive-staging logic, persistence, or the inference
+scheme:
 
 ```text
-test_sharpening_gate.py
-test_boltzmann_identity.py
-test_boltzmann_identity_artifacts.py
-test_boltzmann_checkpoints.py
-test_boltzmann_integration.py
-test_mixed_training.py
+test_boltzmann_md.py
+test_regularization.py
 test_initialization.py
-test_jflows_md_chunking.py
 ```
 
-`test_api_consistency.py` and `test_jflows_compatibility.py` cross the three
-levels and should accompany public interface changes.
+`test_api_consistency.py` crosses the three levels and should accompany
+public interface changes.
 
 ## Focused commands
 
@@ -109,14 +94,15 @@ python smoke/test_openmm.py
 
 The OpenMM smoke explicitly selects the Reference platform. It checks:
 
-- physical-energy parity for all seven shipped bundles;
-- regularized energy and force parity against `Molecular_Potential`;
-- native Langevin on physical and regularized systems; and
-- native parallel tempering on physical and regularized systems.
+- physical-energy parity for all five shipped bundles;
+- energy and force parity of the `(e, r)` regularized surrogate between the
+  OpenMM custom-force form and `Molecular_Potential.regularized`;
+- native Langevin on the bundle System; and
+- native parallel tempering on the bundle System.
 
-The molecular-potential smoke enables x64 for tight stored-reference
-comparisons. Normal training remains accelerator-backed float32 unless a
-program deliberately enables x64.
+The molecular-potential and OpenMM smokes enable x64 for tight
+stored-reference comparisons. Normal training remains accelerator-backed
+float32 unless a program deliberately enables x64.
 
 ## What to verify in output
 
@@ -124,13 +110,13 @@ A zero exit status is necessary. Also verify that the expected PASS lines
 cover the intended feature. Important high-level postconditions include:
 
 - a complete adaptive-staging run has a final stage with `t == 1.0`;
-- an identity selection reports `selected == "identity"` and stores the
-  corresponding flow;
-- a sharpening rejection emits no stage;
-- `flow_endpoint == "pre_sharpen"`;
-- `population_rg == rg_end`;
-- KLX histories omit hat-MALA data and KLXX histories include it;
-- resume continues from the last manifest-published post-sharpen population;
+- an identity selection reports `selected == "identity"`;
+- `batch_ess_hist` has shape `(attempts, steps_total)`;
+- a `bg_param` key outside the policy raises `KeyError`;
+- a stored run validates as `complete` and `load` returns as many records as
+  `run` produced;
+- `run_inference` reports `complete`, a finite inference set of the requested
+  shape, and screened `pushforward_ess` values in `(0, 1]`;
 - OpenMM and JAX energies agree in kJ/mol before the respective beta factors;
   and
 - all sampled arrays are finite with the documented shapes.
@@ -159,19 +145,6 @@ python "$tmp/jflows_md/smoke/test_openmm.py"
 ```
 
 Remove only the exact confirmed temporary directory after verification.
-
-## Compilation benchmark
-
-`smoke/benchmark_compile.py` is an opt-in measurement tool:
-
-```bash
-python smoke/benchmark_compile.py --quick
-python smoke/benchmark_compile.py --timeout 480 --warm-repeats 10
-```
-
-It measures cold and warm execution for representative generic and molecular
-flows, glycerol potential evaluation, mixed MALA, and bounded trainer calls.
-It is not part of `run_all.py` and should not be treated as a correctness test.
 
 ## Scope of smoke evidence
 

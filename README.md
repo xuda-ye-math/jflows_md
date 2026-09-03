@@ -1,290 +1,234 @@
 # jflows_md
 
-`jflows_md` is the mixed-domain molecular companion to `jflows`.
-It supplies bundle-backed molecular potentials, flows on
-`R^p x T^q`, molecular KLX/KLXX training, sampling kernels, linear
-regularization sharpening, and complete-stage resume.
+`jflows_md` is the molecular companion of `jflows`: bundle-backed molecular
+potentials, normalizing flows on the mixed domain `R^p x T^q`, molecular
+trainers with a flow-proposal SMC target surrogate, mixed-domain MALA and HMC,
+adaptive-staging Boltzmann generators with complete-stage resume, and an
+inference scheme that replays a stored run on fresh source particles.
 
-The numerical core is intentionally a raw-performance layer. Constructors and
-compiled kernels assume valid shapes, dtypes, schedules, chunk counts, and
-physical parameters. Bundle construction and structural validation are
-offline concerns; persistence is separate from computation.
+The numerical core is a raw-performance layer: constructors and compiled
+kernels assume valid shapes, dtypes, schedules, chunk counts, and physical
+parameters. Bundle construction is an offline step, and persistence is
+separate from computation.
 
-## Reduced potential and inverse temperature
+## Reduced potential
 
 `Molecular_Potential` owns the inverse temperature. For internal coordinates
-$q$ and their canonical Cartesian representative $x(q)$, it evaluates
+$q$ and their canonical Cartesian representative $x(q)$ it evaluates
 
 $$
-\begin{aligned}
-U(q)&=\beta E(x(q))-\log J(q), \\
-\beta&=\frac{1}{k_{\mathrm B}T}.
-\end{aligned}
+U(q)=\beta E(x(q))-\log J(q), \qquad \beta=\frac{1}{k_{\mathrm B}T},
 $$
 
-The trainers and Boltzmann controllers consume reduced potentials and do not
-apply another temperature factor. A regularized potential modifies the
-Cartesian energy first and then applies the same `beta`; the coordinate
-Jacobian is never regularized.
+with $E$ the raw force-field energy in kJ/mol. The trainers and the Boltzmann
+controllers consume reduced potentials and apply no further temperature
+factor; the coordinate Jacobian is never regularized.
 
 ```python
 import jax
 
 from jflows_md import Mixed_NSF, Molecular_Potential
 
-target = Molecular_Potential.from_bundle("adp_ff96_obc1")
+target = Molecular_Potential.from_bundle("alanine_dipeptide_ff96_obc1", temperature_kelvin=300.0)
 source = target.source()
 samples = source.samples(jax.random.key(0), 32)
 
 flow = Mixed_NSF(
-    jax.random.key(1),
-    target.domain,
-    bins=32,
-    transforms=6,
-    hidden_features=(256, 256),
+    jax.random.key(1), target.domain, bins=32, transforms=6, hidden_features=(256, 256),
 ).zeros()
 
-soft = target.regularized((50.0, 0.10))  # (e [kJ/mol], r [nm])
+reduced = target.reduced_energy(samples)    # beta E(x(q)), no Jacobian
+physical = target.physical_energy(samples)  # E(x(q)) in kJ/mol
 ```
 
-For `rg_param=(e,r)`, $r$ floors only the regular and exception Amber
-Coulomb/Lennard-Jones pair distances. If $E_r$ is that floor-aware energy and
-$E_{\mathrm{ref},r}$ its value at the bundle reference, the excess
-$d=E_r-E_{\mathrm{ref},r}$ is
-mapped by
+## Regularization
 
-$$
-R_e(d)=
-\begin{cases}
-d, & d\le e, \\
-e\left[1+\log(d/e)\right], & d>e.
-\end{cases}
-$$
+The Lennard-Jones core grows as $r^{-12}$, so an early flow proposal can place
+a few samples at energies far beyond the thermally occupied region, and one
+such sample can dominate a batch, a weight vector, or a gradient. The package
+addresses this with one regularization of the target and one screen of the
+importance weights, and with further safeguards that leave the target
+unchanged.
 
-The regularized reduced potential is
+**The regularized potential and its path.** `target.regularized((e, r))` is
+the two-parameter potential $U^{\rho}$, $\rho=(e, r)$: the regular and
+exception nonbonded pair distances are floored at $r$ (nm), and the excess
+$\Delta E$ of the floored energy over the floored energy of the bundle
+reference geometry is compressed by $\mathcal C_e(\Delta E)=\Delta E$ below
+the threshold $e$ (kJ/mol) and $e\,[1+\log(\Delta E/e)]$ above it, before
+$\beta$ and the Jacobian term. The physical potential is the limit
+$e\to\infty$, $r\to0$. A Boltzmann generator run follows the path
+$\rho_s=(1-s)\rho_0+s\rho_1$ (`rg_param_0`, `rg_param_1`) on the diagonal of
+its stage schedule: the stage targets are $U_{t,t}=(1-t)U_0+tU^{\rho_t}$, and
+the stage $t_{k-1}\to t_k$ trains, selects, and advances the population from
+$U_{t_{k-1},t_{k-1}}$ to $U_{t_k,t_k}$ in one step. A soft start (low $e$,
+wide $r$) makes the first increments feasible for the larger molecules;
+`rg_param_0 = rg_param_1` is a fixed regularization. Observables are always
+evaluated with the physical energy.
 
-$$
-U_{\mathrm{rg}}(q)
-=\beta\left[E_{\mathrm{ref},r}+R_e(d)\right]-\log J(q).
-$$
+**Screened ESS and loss (`screen_fraction`).** Every ESS, every resampling
+weight vector, and every loss batch drops the `screen_fraction` largest log
+weights (`SCREEN_FRACTION = 1e-4`): a kept row whose log-ratio is far above
+the rest is a hole of the pushforward density at an ordinary target point and
+would otherwise dominate the ESS or the gradient. One default serves the
+trainers, the generators, the SMC, quench and temper, and the inference.
 
-The pair $(e,r)$ is the complete regularization state; no optimizer clipping
-parameter participates in this definition.
+**Safeguards.**
+
+- A non-finite force-field value stays non-finite; the screen gives it weight
+  zero and the trainers' energy screen excludes it from the loss.
+- `u_clip`: batch rows whose reduced energy exceeds `u_clip` (kT) are excluded
+  from the loss and its penalties.
+- `g_clip`: the global gradient norm fed to Adam is clipped; a non-finite loss
+  or gradient skips the update.
+- `coeff_qt`: after the melt, quench, and temper of the KLXX pool, each row is
+  reweighted by $\exp(-c_{\mathrm{QT}}U)$, resampled, and rejuvenated again,
+  which removes the rows the quench carried away along the singular core.
+- MALA at every SMC level of the forward KL family, so that no gradient of the
+  flow's log-determinant is taken inside the sampler; the exact two-phase SMC
+  is reserved for FAB.
 
 ## Layout
 
 ```text
 jflows_md/
-├── artifacts.py              generic template-based artifacts
+├── artifacts.py              template-based artifacts
 ├── boltzmann/
-│   ├── __init__.py           pure adaptive-staging BG computation
+│   ├── __init__.py           adaptive-staging and fixed-schedule generators
+│   ├── control.py            Manual_Reject: Ctrl+C rejects the running attempt
+│   ├── inference.py          replay of a stored run on fresh source particles
 │   ├── write.py              atomic complete-stage writer
 │   └── load.py               load, inspect, fork, and resume
-├── bundle_build/             optional OpenMM-side construction
-├── core/                     BAT, Amber/OBC, domain, and spline kernels
+├── bundle_build/             OpenMM-side bundle construction
+├── core/                     BAT coordinates, Amber/OBC force field, domain, splines
 ├── flow.py                   Mixed_Identity and Mixed_NSF
 ├── openmm/                   native OpenMM potential and samplers
-├── potential.py              physical and regularized potentials
+├── potential.py              reduced potential and the regularized (e, r) potential
 ├── source.py                 Gaussian x uniform-torus source
-├── system.py                 minimal runtime-bundle loading
-├── train.py                  compiled molecular KLX/KLXX trainers
+├── system.py                 runtime bundle loading
+├── train.py                  compiled KLX, KLL1, FAB, KLXX, and FABX trainers
 └── utils/
-    ├── anneal.py             SMC and AIS
+    ├── anneal.py             flow-proposal SMC and the two-phase FAB SMC
+    ├── control.py            rejection check shared by the long steps
     ├── quench.py             quench and temper
-    └── rejuvenation.py       wrapped mixed-domain MALA
+    ├── rejuvenation.py       wrapped mixed-domain MALA and HMC
+    └── screen.py             importance-weight screen for ESS and resampling
 ```
 
-Eager Python controllers split work into chunks; compiled kernels operate on
-fixed array shapes. Filesystem paths, manifests, and resume policy never enter
-the computation functions.
-
-The complete low-/medium-/high-level interface manual is in
-[`doc/`](doc/README.md). Narrow executable contracts are organized under
-[`smoke/`](smoke/).
+The interface manual is in [`doc/`](doc/README.md); the executable contracts
+are in [`smoke/`](smoke/).
 
 ## Native OpenMM
 
-The same bundle can instantiate an independent Cartesian OpenMM potential.
-It evaluates `beta E(x)` without JAX or the internal-coordinate Jacobian, and
-its `(e,r)` regularization matches `Molecular_Potential.regularized`. Native
-Langevin and replica-exchange runs accept either the physical or regularized
-potential.
+The same bundle instantiates an independent Cartesian OpenMM potential,
+`beta E(x)` without JAX or the coordinate Jacobian, with the same
+`regularized((e, r))` form. Native Langevin and replica-exchange runs
+integrate the bundle's OpenMM System.
 
 ```python
 from jflows_md.openmm import OpenMM_Potential, langevin, parallel_tempering
 
-target = OpenMM_Potential.from_bundle("adp_ff96_obc1")
-soft = target.regularized((50.0, 0.10))
-
-trajectory, energy = langevin(soft, steps=10000, sample_interval=100)
+target = OpenMM_Potential.from_bundle("alanine_dipeptide_ff96_obc1")
+trajectory, energy = langevin(target, steps=10000, sample_interval=100)
 replicas, energy, swap_acceptance = parallel_tempering(
-    target,
-    (300.0, 360.0, 432.0, 518.4),
-    rounds=1000,
-    steps_per_round=100,
+    target, (300.0, 360.0, 432.0, 518.4), rounds=1000, steps_per_round=100,
 )
 ```
 
-The samplers use fresh OpenMM systems and contexts; `platform="Reference"`,
-`"CPU"`, `"CUDA"`, or `"OpenCL"` can be selected explicitly.
+`platform="Reference"`, `"CPU"`, `"CUDA"`, or `"OpenCL"` selects the OpenMM
+platform.
 
 ## Direct training
 
-`train_forward_KLX_G` and `train_forward_KLXX_G` train the molecular `G`
-direction: the flow maps target-like samples toward the source and `flow.inv`
-generates target-like proposals. Both functions return only
-`(trained_flow, batch_ess_history)`.
+`train_forward_KLX_G`, `train_forward_KLL1_G`, `train_FAB_G`,
+`train_forward_KLXX_G`, and `train_FABX_G` train the map `G` from the target
+to the source; `flow.inv` generates target-like proposals. Every step draws a
+source batch from `x_valid` and manufactures its target batch through the
+current flow with the flow-proposal SMC: `ladder` levels, `mc_steps_1` MALA
+steps on the intermediate levels and `mc_steps_2` on the last. Each trainer
+returns `(trained_flow, batch_ess_history)`. With `target_data=` (KLX, KLL1,
+KLXX) the target batches are drawn from a given target sample set instead,
+for data-driven training, and the batch ESS reported is that of the
+pushforward of the source batch.
 
 ```python
 from jflows_md.train import train_forward_KLX_G
 
 trained, batch_ess = train_forward_KLX_G(
-    target_samples,
-    source_samples,
-    source,
-    target,
-    flow,
-    batch_size=128,
-    train_steps=1000,
-    lr=1e-3,
+    x_valid, source, target, flow, target.domain,
+    batch_size=128, steps_total=1000, lr=1e-3, ladder=4,
+    mc_dt=1e-4, mc_steps_1=20, mc_steps_2=100,
 )
 ```
 
-Direct trainers default to `initialize_from_identity=False`. Adaptive-staging
-trained Boltzmann functions default to `True`, so each accepted-stage attempt
-starts from an identity parameterization unless warm-starting is explicitly
-selected. `boltzmann_identity` performs no flow training at all.
+Direct trainers default to `initialize_from_identity=False`; the generators
+default to `True`, so every stage attempt starts from the identity unless a
+warm start is requested.
 
-## Methane Boltzmann generator example
+## Boltzmann generators
 
-[`example/methane_9d_raw/`](example/methane_9d_raw/) is the repository's one
-minimal molecular Boltzmann generator example. It contains a complete 9D CH4
-driver, its fixed 300 K GAFF2/AM1-BCC and OBC1/ACE bundle, and the saved result
-reports for identity, forward KL, and KLXX. The example is self-contained and
-loads its bundle directly from `example/methane_9d_raw/bundle/`.
-
-The checked-in reports were copied from the completed KLXX experiment; they
-were not regenerated for this documentation update. To launch a new run from
-the example directory when desired, use `python train.py --method id`,
-`python train.py --method kl`, or `python train.py --method klxx`.
-
-## Linear sharpening
-
-All three adaptive-staging entry points require two regularization states. The
-identity-only form is:
+The stage targets are the diagonal interpolations `U_{t,t}` above. Each stage
+trains the increment `t_{k-1} -> t_k` on the current population, compares the
+trained map with the identity by the screened population ESS, accepts the
+stage when the selected ESS reaches `bg_param["tau_valid"]` (default `0.6`)
+and otherwise shrinks `t_k` towards `t_{k-1}` by `shrink_factor`, and advances
+the population by reweight, resample, and `mc_steps_2` MALA steps under the
+stage target. Every generator returns `(samples, stages, effective_seconds)`,
+the last being the training time of the accepted attempts alone; a run is
+complete only when `stages[-1]["t"] == 1.0`.
 
 ```python
-from jflows_md.boltzmann import boltzmann_identity
+from jflows_md.boltzmann import (
+    boltzmann_identity, boltzmann_forward_KLX_G, boltzmann_forward_KLXX_G,
+)
 
-particles, stages = boltzmann_identity(
-    x_valid,
-    source,
-    target,
-    ladder=16,
-    mc_dt=1e-4,
-    mc_steps=4,
-    rg_param_0=(20.0, 0.15),
-    rg_param_1=(1000.0, 0.0),
+particles, stages, seconds = boltzmann_identity(x_valid, source, target, mc_dt=1e-4, mc_steps_2=100)
+
+particles, stages, seconds = boltzmann_forward_KLX_G(
+    x_valid, source, target, flow,
+    batch_size=5000, steps_total=500, lr=1e-3, ladder=8,
+    mc_dt=1e-3, mc_steps_1=20, mc_steps_2=100,
+)
+
+particles, stages, seconds = boltzmann_forward_KLXX_G(
+    x_valid, source, target, flow,
+    pool_size=0, batch_size=5000, steps_total=500, lr=1e-3, ladder=8,
+    melt=1.0, opt_alpha=1e-2, opt_steps=200,
+    mc_dt=1e-3, mc_steps_1=20, mc_steps_2=100, coeff_qt=0.5,
 )
 ```
 
-It omits every flow, training, optimizer, pool, and checkpoint argument.
-Identity removes only the learned proposal: SMC stage selection, identity ESS
-over the complete validation set, resampling, pre-sharpen MALA, exact regularization
-sharpening, its ESS gate, and final MALA remain active.
+`coeff_lambda=0.0` in the KLX form is the forward KL. `boltzmann_forward_KLL1_G`,
+`boltzmann_FAB_G`, and `boltzmann_FABX_G` follow the same pattern, and the
+`_fixed` forms take a stage schedule `t_list` in place of `bg_param`. The two
+Langevin budgets are `mc_steps_1` on the intermediate SMC levels and
+`mc_steps_2` on every other rejuvenation: the last SMC level, the quench-and-
+temper rows and pool of KLXX, and the stage advance.
 
-The trained form is:
+A running attempt can be rejected by hand: `Manual_Reject` installs a Ctrl+C
+handler, and with `reject_requested=reject` the attempt is dropped within one
+gradient step of the key press, or between chunks of the quench-and-temper
+pool, the validation weights, and the advance; the endpoint shrinks as after a
+failed ESS gate. A second Ctrl+C within three seconds stops the program.
 
 ```python
-from jflows_md.boltzmann import boltzmann_forward_KLX_G
+from jflows_md.boltzmann import Manual_Reject
 
-particles, stages = boltzmann_forward_KLX_G(
-    x_valid,
-    source,
-    target,
-    flow,
-    pool_size=4096,
-    batch_size=256,
-    train_steps=1000,
-    lr=1e-3,
-    ladder=16,
-    mc_dt=1e-4,
-    mc_steps=4,
-    rg_param_0=(20.0, 0.15),
-    rg_param_1=(1000.0, 0.0),
-)
+with Manual_Reject() as reject:
+    particles, stages, seconds = boltzmann_forward_KLX_G(..., reject_requested=reject)
 ```
 
-The `_rg` helper computes
-
-$$
-\mathrm{rg}(t)
-=
-\mathtt{rg\_param\_0}
-+t\left(\mathtt{rg\_param\_1}-\mathtt{rg\_param\_0}\right).
-$$
-
-Here $t$ is a dimensionless stage-interpolation parameter. It does not change
-the physical `temperature_kelvin` or inverse temperature $\beta$ (`beta`),
-which remain properties of the molecular target.
-
-Let $U_{\mathrm{source}}$ denote `source`, and let
-$U_{\mathrm{rg}(t)}$ denote `target.regularized(rg(t))`. For an accepted
-stage interval $a\to b$, the code variables `source_bridge` and `target_soft`
-are
-
-$$
-\begin{aligned}
-B_a
-&=(1-a)U_{\mathrm{source}}+aU_{\mathrm{rg}(a)}, \\
-B_b^{-}
-&=(1-b)U_{\mathrm{source}}+bU_{\mathrm{rg}(a)}.
-\end{aligned}
-$$
-
-After proposal selection and resampling, `target_sharp` is
-
-$$
-B_b^{+}=(1-b)U_{\mathrm{source}}+bU_{\mathrm{rg}(b)},
-$$
-
-and `sharpen_log_weight` stores
-
-$$
-\log w_{\mathrm{sharpen}}=B_b^{-}-B_b^{+}.
-$$
-
-The controller then resamples and applies MALA at `target_sharp`. Thus the
-emitted samples at $t=1$ target `target.regularized(rg_param_1)`.
-
-The flow and sharpening transitions form one accepted stage. Both the
-selected-flow ESS and the sharpening ESS must reach `bg_param["tau_ess"]`
-(default `0.6`). If either gate fails, the controller applies the configured
-`shrink_factor` to $b-a$ and retries the complete stage. A stage is emitted
-and made available to persistence only after both gates pass.
-
-Each stage record deliberately distinguishes:
-
-- `flow_rg` and `flow_endpoint="pre_sharpen"`: the law used to train the
-  proposal flow;
-- `population_rg`: the law of the emitted post-sharpen particles;
-- `sharpen_ess_hist`: attempt-aligned sharpening ESS (`NaN` when the flow
-  gate rejected before sharpening was evaluated);
-- `sharpen_ess` and `sharpen_mala_acceptance`: accepted sharpening
-  diagnostics.
-
-The per-stage flows are proposal maps for this particle algorithm. They do not
-compose into a deterministic source-to-final generator because sharpening is
-a stochastic transition between stages.
+Each stage record carries `t_start`, `t`, `rg_start`, `rg_end`, the three
+population ESS values, `selected`, the selected `flow` and the
+`continuation_flow`, the attempt histories, the `mala_acceptance` of the
+advance, `elapsed_seconds`, and `accepted_attempt_seconds`.
 
 ## Complete-stage resume
 
-Persistence mirrors `jflows` 0.5 and remains outside the compute API.
-`jflows_md.boltzmann.write` atomically writes the post-sharpen population,
-histories, and stage metadata before publishing the stage in `run.json`.
-Trained runs additionally write both flow artifacts; identity runs write no
-`.eqx` files. `jflows_md.boltzmann.load.run` resumes from the last published
-stage; an incomplete unpublished directory is ignored and recomputed.
+`jflows_md.boltzmann.write` publishes every accepted stage atomically (the
+population, the histories, the metadata, and the two flow files of a trained
+stage) in `run.json`; `jflows_md.boltzmann.load.run` resumes from the last
+published stage.
 
 ```python
 from jflows_md.boltzmann import iterate_boltzmann
@@ -292,166 +236,107 @@ from jflows_md.boltzmann.load import run
 
 def iterate(samples, continuation, accepted_t, start_stage):
     return iterate_boltzmann(
-        samples,
-        source,
-        target,
-        continuation,
-        objective="forward_klx",
-        accepted_t=accepted_t,
-        start_stage=start_stage,
-        # supply the same numerical controls used for a direct run
-        **controls,
+        samples, source, target, continuation, objective="forward_klx",
+        accepted_t=accepted_t, start_stage=start_stage, **controls,
     )
 
-config = {
-    "target": "adp_ff96_obc1",
-    "seed": 0,
-    "rg_param_0": (20.0, 0.15),
-    "rg_param_1": (1000.0, 0.0),
-}
-
-particles, stages = run(
-    "runs/adp",
-    "adp-regularization",
-    config,
-    x_valid,
-    flow,
-    iterate,
-)
-
-# After interruption, `flow` is the same architecture template.
-particles, stages = run(
-    "runs/adp",
-    "adp-regularization",
-    config,
-    None,
-    flow,
-    iterate,
-    resume=True,
-)
+config = {"target": "alanine_dipeptide_ff96_obc1", "seed": 0, **controls_without_monitor}
+particles, stages = run("runs/alanine_dipeptide", "alanine_dipeptide-klx", config, x_valid, flow, iterate)
+particles, stages = run("runs/alanine_dipeptide", "alanine_dipeptide-klx", config, None, flow, iterate, resume=True)
 ```
 
-Resume requires the same problem identifier, complete numerical configuration,
-and exact static flow template; mismatches are rejected. The saved population,
-not flow-only replay, is the continuation state. Use
-`manifest`, `validate`, `load`, `load_stage_flow`,
-`load_validation_samples`, `load_training_history`, and `fork` for inspection
-and run management.
+Resume requires the same problem identifier, configuration, and static flow
+template. `manifest`, `validate`, `load`, `load_stage_flow`,
+`load_validation_samples`, `load_training_history`, and `fork` inspect and
+manage stored runs.
+
+## Inference scheme
+
+`run_inference` replays the frozen selected maps of a complete run on fresh
+source particles: for every stage it pushes the population through the stored
+map, evaluates the stage weight, resamples with the screened weights, and
+rejuvenates with `mc_steps` MALA steps under the stage target, rebuilt from
+the run's regularization path. Populations are processed in chunks and kept
+as `.npy` memmaps, so the sample count is not limited by device memory.
+
+```python
+from jflows_md import run_inference
+
+manifest = run_inference(
+    "runs/alanine_dipeptide", "runs/alanine_dipeptide-inference", flow, source, target,
+    sample_count=1_000_000, mc_dt=1e-3, mc_steps=100, chunk_size=10_000,
+)
+final = manifest["inference_samples_path"]
+```
+
+The output directory must be empty; it receives `run.json` and, per stage,
+`samples.npy`, `log_weights.npy`, and `metadata.json`. The last stage's
+samples are the inference set.
 
 ## Bundles and installation
 
-Runtime bundles contain exactly:
+A runtime bundle is a directory with `coordinates.json`, `manifest.json`,
+`reference.pdb`, `system.json`, `system.xml`, and `validation.json`. The
+source checkout ships five, the alanine dipeptide of the chiral tests and the
+four alkanes of the alkane family:
 
-```text
-coordinates.json
-manifest.json
-reference.pdb
-system.json
-system.xml
-validation.json
-```
+| Bundle | Model | Domain | Fixed centers |
+|---|---|---|---:|
+| `alanine_dipeptide_ff96_obc1` | ff96; OBC1/ACE | `R^42 x T^18` | 1 (L-Ala) |
+| `methane_gaff2_am1bcc_obc1` | GAFF2/AM1-BCC; OBC1/ACE | `R^7 x T^2` | 0 |
+| `ethane_gaff2_am1bcc_obc1` | GAFF2/AM1-BCC; OBC1/ACE | `R^13 x T^5` | 0 |
+| `propane_gaff2_am1bcc_obc1` | GAFF2/AM1-BCC; OBC1/ACE | `R^19 x T^8` | 0 |
+| `n_butane_gaff2_am1bcc_obc1` | GAFF2/AM1-BCC; OBC1/ACE | `R^25 x T^11` | 0 |
 
-A source checkout includes these seven audited named bundles:
-
-| CLI preset | Bundle | Model | Domain | Fixed centers |
-|---|---|---|---|---:|
-| `adp` | `adp_ff96_obc1` | ff96; OBC1/ACE | `R^42 x T^18` | 1 (L-Ala) |
-| `glycerol` | `glycerol_gaff2_am1bcc_obc1` | GAFF2/AM1-BCC; OBC1/ACE | `R^25 x T^11` | 0 |
-| `diethanolamine` | `diethanolamine_gaff2_am1bcc_obc1` | GAFF2/AM1-BCC; OBC1/ACE | `R^33 x T^15` | 0 |
-| `nma` | `nma_ff96_obc1` | ff96; OBC1/ACE | `R^21 x T^9` | 0 |
-| `s_2_butanol` | `s_2_butanol_gaff2_am1bcc_obc1` | GAFF2/AM1-BCC; OBC1/ACE | `R^28 x T^11` | 1 (S) |
-| `rr_2_3_butanediol` | `rr_2_3_butanediol_gaff2_am1bcc_obc1` | GAFF2/AM1-BCC; OBC1/ACE | `R^31 x T^11` | 2 (R,R) |
-| `cyclohexane` | `cyclohexane_gaff2_am1bcc_obc1` | GAFF2/AM1-BCC; OBC1/ACE | `R^33 x T^15` | 0 |
-
-NMA keeps its amide cis/trans coordinate periodic and unrestricted; the
-force field assigns its energetic preference. Cyclohexane likewise has no
-stereochemical support restriction, so ring conformations and chair inversion
-are not split into artificial components. The two alcohol presets restrict
-the chart to their named absolute configurations.
-Candidate manifests pin AmberTools 26.0.0 and their structure/parameter
-provenance. The two alcohol `parmchk2` files add no terms; cyclohexane records
-the zero-penalty transfer of its `c6` terms from the GAFF2 `c3` types.
-
-Wheels contain Python code only; bundle data must be downloaded or prepared
-separately. An installed user can search an external directory and select a
-bundle by name:
+Wheels contain code only; bundles live in a separate directory and are
+selected by name:
 
 ```python
 from jflows_md import Molecular_Bundle, available_bundles
 
-bundle_root = "downloaded-bundles"
-names = available_bundles(bundle_root)
-bundle = Molecular_Bundle.load(names[0], root=bundle_root)
+names = available_bundles("downloaded-bundles")
+bundle = Molecular_Bundle.load(names[0], root="downloaded-bundles")
 ```
 
-The same `root=` keyword is accepted by `Molecular_Potential.from_bundle` and
-`OpenMM_Potential.from_bundle`. `available_bundles()` returns an empty tuple
-when the requested directory is absent or contains no bundles.
+`Molecular_Potential.from_bundle` and `OpenMM_Potential.from_bundle` accept
+the same `root=`.
 
-Install matching JAX and OpenMM accelerator wheels separately. Choose one CUDA
-toolkit generation:
+Install the JAX and OpenMM accelerator wheels of one CUDA generation, then
+`jflows` and this project:
 
 ```bash
 pip install "jax[cuda13]" "openmm[cuda13]"
-# or: pip install "jax[cuda12]" "openmm[cuda12]"
-```
-
-Installing a JAX CUDA extra does not install the OpenMM CUDA plugin, and the
-OpenMM extra does not install the JAX plugin. These extras select the
-independently packaged JAX and OpenMM CUDA wheels; they must use the same CUDA
-generation. Then install the local `jflows` checkout and this project:
-
-```bash
 python -m pip install -e "${JFLOWS_ROOT:?set JFLOWS_ROOT}"
 python -m pip install -e .
 ```
 
-Inspect the installed runtimes without creating a JAX client or OpenMM
-context:
-
-```python
-import jflows_md
-
-jflows_md.backend()
-```
-
-Base OpenMM-side construction is optional and CPU-capable; select a CUDA extra
-above when native GPU execution is required:
+`jflows_md.backend()` prints the installed runtimes without creating a JAX
+client or an OpenMM context. Bundle construction needs the OpenMM extras:
 
 ```bash
-python -m pip install -e ".[openmm]"
-python -m pip install -e ".[bundles]"
-python -m jflows_md.bundle_build \
-  glycerol molecule.prmtop molecule.rst7 generated/glycerol
+python -m pip install -e ".[openmm,bundles]"
+python -m jflows_md.bundle_build alanine_dipeptide molecule.prmtop molecule.rst7 generated/alanine_dipeptide
 ```
 
-From a source checkout, the equivalent wrapper is
-`python -m bundles.build_molecular_bundles ...`.
+The one build preset is `alanine_dipeptide`; its fixed stereocenter carries
+caller-supplied CIP-priority atom orders, so bundle construction rejects a
+reference geometry with the wrong R/S configuration; see
+`doc/01-low-level.md` for the coordinate configuration.
 
-The command-line presets above carry explicit coordinate configurations.
-Programmatic `jflows_md.bundle_build.write_bundle(...)` calls may provide
-`zmatrix`, `fixed_stereocenters`, and `signed_volume_diagnostics` for any
-additional explicitly prepared molecule, but that low-level route is not a
-claim of curated target support. Multiple fixed tetrahedral centers use
-multiple half-chart torsions; no center is inferred from the molecule name.
-For named chiral presets, caller-supplied CIP-priority atom orders make bundle
-construction reject a reference with the wrong requested R/S configuration.
-Legacy schema-v2 achiral and single-center bundles remain runtime compatible.
-For source compatibility, a target-only builder call with all new coordinate
-options at their defaults still reproduces the historical schema-v2 defaults
-for `adp`, `glycerol`, and `diethanolamine`; any non-default coordinate option
-uses the new schema-v3 route.
-See `doc/01-low-level.md` for the configuration contract.
+## Example
+
+[`example/methane_9d_raw/`](example/methane_9d_raw/) is a complete 9D methane
+Boltzmann generator: a driver, its bundle, and result reports. From that
+directory, `python train.py --method id`, `--method kl`, or `--method klxx`
+runs the identity, the forward KL, or the KLXX generator through the
+persistence controller and summarizes the accepted stages in `results/`.
 
 ## Verification
 
-Run the complete local suite from the repository root only when the accelerator
-is available:
-
 ```bash
-XLA_PYTHON_CLIENT_PREALLOCATE=false \
-python smoke/run_all.py
+XLA_PYTHON_CLIENT_PREALLOCATE=false python smoke/run_all.py
 ```
 
-`smoke/benchmark_compile.py` is an opt-in compilation benchmark and is not part
-of `run_all.py`.
+runs the thirteen smoke modules of `smoke/run_all.py`, each in a fresh
+subprocess; [`doc/04-smoke-tests.md`](doc/04-smoke-tests.md) says what each
+one establishes.

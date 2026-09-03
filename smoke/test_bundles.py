@@ -13,19 +13,11 @@ from jflows_md.bundle_build import write_bundle
 
 
 EXPECTED = {
-    "adp_ff96_obc1": ("C6H12N2O2", 22, 60, 42, 18),
-    "glycerol_gaff2_am1bcc_obc1": ("C3H8O3", 14, 36, 25, 11),
-    "diethanolamine_gaff2_am1bcc_obc1": ("C4H11NO2", 18, 48, 33, 15),
-    "nma_ff96_obc1": ("C3H7NO", 12, 30, 21, 9),
-    "s_2_butanol_gaff2_am1bcc_obc1": ("C4H10O", 15, 39, 28, 11),
-    "rr_2_3_butanediol_gaff2_am1bcc_obc1": (
-        "C4H10O2",
-        16,
-        42,
-        31,
-        11,
-    ),
-    "cyclohexane_gaff2_am1bcc_obc1": ("C6H12", 18, 48, 33, 15),
+    "alanine_dipeptide_ff96_obc1": ("C6H12N2O2", 22, 60, 42, 18),
+    "methane_gaff2_am1bcc_obc1": ("CH4", 5, 9, 7, 2),
+    "ethane_gaff2_am1bcc_obc1": ("C2H6", 8, 18, 13, 5),
+    "propane_gaff2_am1bcc_obc1": ("C3H8", 11, 27, 19, 8),
+    "n_butane_gaff2_am1bcc_obc1": ("C4H10", 14, 36, 25, 11),
 }
 EXPECTED_FILES = {
     "coordinates.json",
@@ -43,22 +35,29 @@ EXPECTED_PUBLIC = {
     "Molecular_Bundle",
     "Molecular_Potential",
     "Molecular_Source",
-    "annealed_importance_sampling",
     "available_bundles",
     "boltzmann_identity",
+    "boltzmann_FABX_G",
+    "boltzmann_FAB_G",
+    "boltzmann_forward_KLL1_G",
     "boltzmann_forward_KLX_G",
     "boltzmann_forward_KLXX_G",
+    "mixed_hmc",
     "mixed_mala",
     "mixed_quench_and_temper",
-    "potential_space_smc",
+    "run_inference",
     "sequential_monte_carlo",
+    "sequential_monte_carlo_fab",
+    "train_FABX_G",
+    "train_FAB_G",
+    "train_forward_KLL1_G",
     "train_forward_KLX_G",
     "train_forward_KLXX_G",
 }
 
 
 def main() -> None:
-    assert jflows_md.__version__ == "0.5.4"
+    assert jflows_md.__version__ == "0.6.0"
     assert set(jflows_md.__all__) == EXPECTED_PUBLIC
     output = io.StringIO()
     with redirect_stdout(output):
@@ -86,10 +85,10 @@ def main() -> None:
         root = Path(temporary)
         assert available_bundles(root) == ()
         assert available_bundles(root / "missing") == ()
-        shutil.copytree(Molecular_Bundle.load("adp_ff96_obc1").path, root / "one")
+        shutil.copytree(Molecular_Bundle.load("alanine_dipeptide_ff96_obc1").path, root / "one")
         assert available_bundles(root) == ("one",)
         selected = Molecular_Bundle.load("one", root=root)
-        assert selected.name == "adp_ff96_obc1"
+        assert selected.name == "alanine_dipeptide_ff96_obc1"
         assert selected.path == (root / "one").resolve()
         selected_target = jflows_md.Molecular_Potential.from_bundle(
             "one", root=root

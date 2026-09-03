@@ -8,11 +8,11 @@ import equinox as eqx
 import numpy as np
 
 from .write import (
+    FORMAT,
     _HISTORY_NAMES,
     _IDENTITY_HISTORY_NAMES,
     _IDENTITY_METADATA_NAMES,
     _METADATA_NAMES,
-    _check_regularization,
     _flow_template,
     _value,
     create,
@@ -73,7 +73,7 @@ def validate(run_dir) -> dict:
     missing = run_fields - set(record)
     if missing:
         raise ValueError(f"incomplete run manifest: {sorted(missing)}")
-    if record["format"] != "jflows-md-stage-resume-1":
+    if record["format"] != FORMAT:
         raise ValueError(f"unknown run format: {record['format']}")
     if record["status"] not in ("running", "exhausted", "complete"):
         raise ValueError(f"unknown run status: {record['status']}")
@@ -110,22 +110,14 @@ def validate(run_dir) -> dict:
         if missing:
             raise ValueError(f"incomplete stage metadata: {sorted(missing)}")
         if identity:
-            if (
-                has_flow
-                or saved["selected"] != "identity"
-                or not np.allclose(saved["population_rg"], saved["rg_end"])
-            ):
+            if has_flow or saved["selected"] != "identity":
                 raise ValueError("invalid identity stage metadata")
         elif (
             not has_flow
-            or saved["flow_endpoint"] != "pre_sharpen"
-            or not np.allclose(saved["flow_rg"], saved["rg_start"])
-            or not np.allclose(saved["population_rg"], saved["rg_end"])
             or saved["selected"] not in ("trained", "identity")
-            or saved["objective"] not in ("forward_klx", "forward_klxx")
+            or saved["objective"] not in ("forward_klx", "forward_kll1", "fab", "forward_klxx", "fabx")
         ):
-            raise ValueError("invalid sharpening stage metadata")
-        _check_regularization(record["config"], saved)
+            raise ValueError("invalid stage metadata")
         history = _path(root, saved["history_path"])
         if not history.is_file():
             raise FileNotFoundError(history)
@@ -134,11 +126,8 @@ def validate(run_dir) -> dict:
                 _IDENTITY_HISTORY_NAMES if identity else _HISTORY_NAMES
             )
             missing = set(history_names) - set(data.files)
-            has_hat = "hat_mala_acceptance" in data.files
         if missing:
             raise ValueError(f"incomplete stage history: {sorted(missing)}")
-        if has_hat != (saved["objective"] == "forward_klxx"):
-            raise ValueError("history does not match the stage objective")
         previous = saved["t"]
         required.extend([saved["validation_samples_path"], saved["history_path"]])
         if not identity:
@@ -182,24 +171,20 @@ def load(run_dir, template=None):
         record.update({
             "t": float(saved["t"]),
             "t_start": float(saved["t_start"]),
-            "rg_start": tuple(saved["rg_start"]),
-            "rg_end": tuple(saved["rg_end"]),
-            "population_rg": tuple(saved["population_rg"]),
+            "rg_start": None if saved["rg_start"] is None else tuple(saved["rg_start"]),
+            "rg_end": None if saved["rg_end"] is None else tuple(saved["rg_end"]),
             "valid_selected_ess": float(saved["valid_selected_ess"]),
             "valid_identity_ess": float(saved["valid_identity_ess"]),
             "valid_sample_count": int(saved["valid_sample_count"]),
             "selected": saved["selected"],
             "attempt_status_hist": tuple(saved["attempt_status_hist"]),
-            "selection_history": tuple(saved["selection_history"]),
-            "sharpen_ess": float(saved["sharpen_ess"]),
             "objective": saved["objective"],
             "elapsed_seconds": float(saved["elapsed_seconds"]),
+            "accepted_attempt_seconds": float(saved["accepted_attempt_seconds"]),
             "validation_samples_path": saved["validation_samples_path"],
         })
         if saved["objective"] != "identity":
             record.update({
-                "flow_rg": tuple(saved["flow_rg"]),
-                "flow_endpoint": saved["flow_endpoint"],
                 "valid_trained_ess": float(saved["valid_trained_ess"]),
                 "initialized_from_identity": bool(
                     saved["initialized_from_identity"]
@@ -207,9 +192,6 @@ def load(run_dir, template=None):
                 "selected_flow_path": saved["selected_flow_path"],
                 "continuation_flow_path": saved["continuation_flow_path"],
             })
-            record["hat_mala_acceptance"] = record.get(
-                "hat_mala_acceptance"
-            )
             record["flow"] = eqx.tree_deserialise_leaves(
                 _path(root, saved["selected_flow_path"]), template
             )
@@ -288,7 +270,6 @@ def load_training_history(run_dir, stage: int) -> dict:
     ) as data:
         result = {name: data[name].copy() for name in data.files}
     result["attempt_status_hist"] = tuple(saved["attempt_status_hist"])
-    result["selection_history"] = tuple(saved["selection_history"])
     return result
 
 

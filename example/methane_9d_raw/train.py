@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Train the fixed-regularization methane Boltzmann generator."""
+"""Train the methane Boltzmann generator (identity, KL, or KLXX)."""
 
 import argparse
 import json
@@ -47,19 +47,18 @@ def main():
 
     settings = (
         f"VALID_SIZE={P.VALID_SIZE} LADDER={P.LADDER} "
-        f"MC_DT={P.MC_DT} MC_STEPS={P.MC_STEPS} CHUNKS={P.CHUNKS}"
+        f"MC_DT={P.MC_DT} MC_STEPS_1={P.MC_STEPS_1} MC_STEPS_2={P.MC_STEPS_2} "
+        f"CHUNKS={P.CHUNKS} SCREEN={P.SCREEN_FRACTION}"
     )
     if args.method == "id":
         settings += f" MAX_RETRY={bg_param['max_retry']}"
     else:
         settings += (
             f" POOL_SIZE={P.POOL_SIZE} BATCH_SIZE={P.BATCH_SIZE} "
-            f"TRAIN_STEPS={P.TRAIN_STEPS} U_CLIP={P.U_CLIP} "
-            f"G_CLIP={P.G_CLIP} LR_WARMUP={P.LR_WARMUP}"
+            f"STEPS_TOTAL={P.STEPS_TOTAL} U_CLIP={P.U_CLIP} "
+            f"G_CLIP={P.G_CLIP} LR_WARMUP={P.LR_WARMUP} COEFF_QT={P.COEFF_QT}"
         )
-    log(
-        f"START methane 9D {args.method} | rg_param={P.RG_PARAM} | {settings}"
-    )
+    log(f"START methane 9D {args.method} | {settings}")
 
     target = Molecular_Potential.from_bundle(
         BUNDLE, temperature_kelvin=P.TEMPERATURE_KELVIN
@@ -81,11 +80,8 @@ def main():
         ).zeros()
 
     controls = {
-        "ladder": P.LADDER,
         "mc_dt": P.MC_DT,
-        "mc_steps": P.MC_STEPS,
-        "rg_param_0": P.RG_PARAM,
-        "rg_param_1": P.RG_PARAM,
+        "mc_steps_2": P.MC_STEPS_2,
         "monitor": Monitor(
             P.MONITOR_EVERY, f"[{P.MOLECULE} {args.method}] ", log
         ),
@@ -93,18 +89,22 @@ def main():
         "chunks": P.CHUNKS,
         "mc_image_radius": P.MC_IMAGE_RADIUS,
         "seed": P.SEED,
+        "screen_fraction": P.SCREEN_FRACTION,
     }
     if args.method != "id":
         controls.update({
             "objective": "forward_klx" if args.method == "kl" else "forward_klxx",
             "pool_size": P.POOL_SIZE,
             "batch_size": P.BATCH_SIZE,
-            "train_steps": P.TRAIN_STEPS,
+            "steps_total": P.STEPS_TOTAL,
             "lr": P.LR,
+            "ladder": P.LADDER,
+            "mc_steps_1": P.MC_STEPS_1,
             "initialize_from_identity": P.INITIALIZE_FROM_IDENTITY,
             "coeff_lambda": 0.0 if args.method == "kl" else 1.0,
-            "coeff_alpha": 0.5,
-            "coeff_beta": 0.5,
+            "coeff_theta": P.COEFF_THETA,
+            "coeff_alpha": P.COEFF_ALPHA,
+            "coeff_qt": P.COEFF_QT if args.method == "klxx" else 0.0,
             "melt": P.MELT if args.method == "klxx" else 0.0,
             "opt_alpha": P.OPT_ALPHA if args.method == "klxx" else 1.0,
             "opt_steps": P.OPT_STEPS if args.method == "klxx" else 0,
@@ -141,7 +141,7 @@ def main():
 
     particles, stages = run(
         run_dir,
-        f"methane-9d-{args.method}-e100-r015",
+        f"methane-9d-{args.method}",
         config,
         x_valid,
         flow,
@@ -153,8 +153,6 @@ def main():
     factor = 1.0
     for stage in stages:
         factor /= stage["valid_selected_ess"]
-        if stage["rg_start"] != stage["rg_end"]:
-            factor /= stage["sharpen_ess"]
     elapsed = sum(stage["elapsed_seconds"] for stage in stages)
 
     results = HERE / "results"
@@ -162,8 +160,6 @@ def main():
     lines = [
         f"# Methane 9D {args.method.upper()}",
         "",
-        f"- Fixed `rg_param`: `{P.RG_PARAM}`",
-        "- Sharpening: none",
         f"- Complete: `{bool(stages and stages[-1]['t'] == 1.0)}`",
         f"- Total factor: `{factor:.6g}`",
         f"- Total time: `{elapsed / 60:.2f} min`",
@@ -179,7 +175,6 @@ def main():
     (results / f"{args.method}.md").write_text("\n".join(lines) + "\n")
     log(json.dumps({
         "method": args.method,
-        "rg_param": P.RG_PARAM,
         "stages": len(stages),
         "complete": bool(stages and stages[-1]["t"] == 1.0),
     }))

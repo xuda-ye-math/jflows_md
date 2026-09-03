@@ -19,13 +19,11 @@ from jflows_md.openmm import (  # noqa: E402
 
 
 BUNDLES = (
-    "adp_ff96_obc1",
-    "glycerol_gaff2_am1bcc_obc1",
-    "diethanolamine_gaff2_am1bcc_obc1",
-    "nma_ff96_obc1",
-    "s_2_butanol_gaff2_am1bcc_obc1",
-    "rr_2_3_butanediol_gaff2_am1bcc_obc1",
-    "cyclohexane_gaff2_am1bcc_obc1",
+    "alanine_dipeptide_ff96_obc1",
+    "methane_gaff2_am1bcc_obc1",
+    "ethane_gaff2_am1bcc_obc1",
+    "propane_gaff2_am1bcc_obc1",
+    "n_butane_gaff2_am1bcc_obc1",
 )
 
 
@@ -48,7 +46,7 @@ def check_physical_energy() -> None:
 
 
 def check_regularization() -> None:
-    bundle = Molecular_Bundle.load("glycerol_gaff2_am1bcc_obc1")
+    bundle = Molecular_Bundle.load("alanine_dipeptide_ff96_obc1")
     jax_potential = Molecular_Potential(bundle).regularized((50.0, 0.1))
     openmm_potential = OpenMM_Potential(bundle).regularized((50.0, 0.1))
     frames = jnp.asarray(bundle.validation["frames_nm"])
@@ -68,10 +66,10 @@ def check_regularization() -> None:
     floor = jax_potential.rg_param[1]
 
     def energy(frame):
-        value = jax_potential.base.forcefield._energy_with_pair_distance_floor(
+        value = jax_potential.base.forcefield.energy_with_pair_distance_floor(
             frame[None], floor
         )[0]
-        return jax_potential._regularize_energy(value)
+        return jax_potential._compress(value)
 
     expected_force = -jax.vmap(jax.grad(energy))(frames)
     actual_force = openmm_potential.forces(
@@ -90,7 +88,7 @@ def check_regularization() -> None:
 
 
 def check_native_sampling() -> None:
-    raw = OpenMM_Potential.from_bundle("glycerol_gaff2_am1bcc_obc1")
+    raw = OpenMM_Potential.from_bundle("alanine_dipeptide_ff96_obc1")
     regularized = raw.regularized((50.0, 0.1))
     for potential in (raw, regularized):
         trajectory, energies = langevin(

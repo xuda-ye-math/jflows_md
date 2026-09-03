@@ -23,7 +23,7 @@ from jflows_md.artifacts import (  # noqa: E402
 
 
 def main() -> None:
-    target = Molecular_Potential.from_bundle("glycerol_gaff2_am1bcc_obc1")
+    target = Molecular_Potential.from_bundle("alanine_dipeptide_ff96_obc1")
     flow = Mixed_NSF(
         jax.random.key(80),
         target.domain,

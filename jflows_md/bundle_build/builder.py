@@ -24,7 +24,7 @@ KB_KJ_MOL_K = 0.00831446261815324
 ACE_COEFFICIENT = 28.3919551
 
 _LEGACY_COORDINATE_OPTIONS = {
-    "adp": {
+    "alanine_dipeptide": {
         "zmatrix": {
             "root": 6,
             "prefix": (6, 8, 14, 10),
@@ -39,22 +39,6 @@ _LEGACY_COORDINATE_OPTIONS = {
                 "label": "legacy",
                 "torsion_index": 0,
                 "atoms": (8, 6, 14, 10),
-            },
-        ),
-    },
-    "glycerol": {
-        "signed_volume_diagnostics": (
-            {
-                "label": "legacy",
-                "atoms": (2, 1, 3, 4),
-            },
-        ),
-    },
-    "diethanolamine": {
-        "signed_volume_diagnostics": (
-            {
-                "label": "legacy",
-                "atoms": (3, 2, 4, 12),
             },
         ),
     },
@@ -298,7 +282,7 @@ def build_coordinate_spec(
     Each fixed stereocenter names a Z-matrix torsion and the four atoms of
     its signed-volume diagnostic. The reference geometry determines both
     allowed signs. The optional ``target`` retains the historical coordinate
-    defaults for ADP, glycerol, and diethanolamine when no explicit coordinate
+    defaults for alanine dipeptide when no explicit coordinate
     option is supplied; otherwise no stereochemistry is inferred from a name.
     """
 

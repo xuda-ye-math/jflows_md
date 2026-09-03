@@ -6,3 +6,5 @@ __pycache__/
 .pytest_cache/
 .jax_cache/
 smoke/compile_benchmark.csv
+build/
+dist/

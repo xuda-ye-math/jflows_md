@@ -269,7 +269,7 @@ class Amber_OBC_Force_Field(eqx.Module):
         return polarization + ace
 
     def _bonded_and_gb_terms(self, x: Array) -> dict[str, Array]:
-        """Evaluate terms shared by the raw and floor-aware energy paths."""
+        """Evaluate the bonded and generalized Born terms."""
 
         bond_distance = jnp.linalg.norm(
             x[:, self.bond_idx[:, 0]] - x[:, self.bond_idx[:, 1]], axis=-1
@@ -326,11 +326,13 @@ class Amber_OBC_Force_Field(eqx.Module):
             "total": total,
         }
 
-    def _energy_with_pair_distance_floor(
+    def __call__(self, x: Array) -> Array:
+        return self.energy_terms(x)["total"]
+
+    def energy_with_pair_distance_floor(
         self, x: Array, pair_distance_floor_nm: Array
     ) -> Array:
-        """Return total energy with only nonbonded pair distances floored."""
-
+        """Total energy with only the nonbonded pair distances floored at ``r``."""
         terms = self._bonded_and_gb_terms(x)
         nonbonded = self._pair_energy_with_floor(
             x,
@@ -348,12 +350,5 @@ class Amber_OBC_Force_Field(eqx.Module):
             pair_distance_floor_nm,
         )
         return (
-            terms["bond"]
-            + terms["angle"]
-            + terms["torsion"]
-            + nonbonded
-            + terms["gb"]
+            terms["bond"] + terms["angle"] + terms["torsion"] + nonbonded + terms["gb"]
         )
-
-    def __call__(self, x: Array) -> Array:
-        return self.energy_terms(x)["total"]

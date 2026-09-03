@@ -10,7 +10,7 @@ import jax.numpy as jnp  # noqa: E402
 
 from jflows.potential import Potential  # noqa: E402
 from jflows.train import Monitor  # noqa: E402
-from jflows.utils import compute_ESS_log  # noqa: E402
+from jflows_md.utils.screen import compute_ESS_log  # noqa: E402  (the screened ESS the trainers report)
 from jflows_md import Mixed_NSF, Molecular_Source  # noqa: E402
 from jflows_md.core.domain import Mixed_Domain  # noqa: E402
 from jflows_md.train import (  # noqa: E402
@@ -126,13 +126,17 @@ def main() -> None:
     messages = []
     trained, ess = train_forward_KLX_G(
         samples,
-        samples,
         source,
         target,
         flow,
+        domain,
         6,
         2,
         1e-3,
+        1,
+        1e-3,
+        1,
+        1,
         monitor=Monitor(1, "[molecular] ", messages.append),
         checkpoint=True,
         seed=42,
@@ -142,11 +146,12 @@ def main() -> None:
     assert samples.dtype == ess.dtype == jnp.float32
     assert ess.shape == (2,)
     trainer_key = jax.random.fold_in(jax.random.key(31), 42)
-    _, source_key, _ = jax.random.split(jax.random.fold_in(trainer_key, 1), 3)
+    index_key, _ = jax.random.split(jax.random.fold_in(trainer_key, 1))
     source_batch = samples[
-        jax.random.choice(source_key, samples.shape[0], (6,), replace=False)
+        jax.random.choice(index_key, samples.shape[0], (6,), replace=False)
     ]
     proposal, ladj = flow.inv_and_ladj(source_batch)
+    proposal = domain.wrap(proposal)
     expected = compute_ESS_log(source(source_batch) - target(proposal) + ladj)
     assert bool(jnp.allclose(ess[0], expected, atol=1e-6))
     assert len(messages) == 2

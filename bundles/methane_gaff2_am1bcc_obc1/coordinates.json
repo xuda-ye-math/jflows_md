@@ -1,0 +1,110 @@
+{
+  "angle_logit_offset": [
+    0.43964084498572187,
+    0.43964084498572187,
+    0.43964084498572187
+  ],
+  "angle_logit_scale": [
+    0.12188609971256281,
+    0.12188609971256281,
+    0.12188609971256281
+  ],
+  "atom_permutation_groups": [
+    [
+      1,
+      2,
+      3,
+      4
+    ]
+  ],
+  "backbone_torsion_indices": [],
+  "bond_log_offset": [
+    -2.211105085956572,
+    -2.211105085956572,
+    -2.211105085956572,
+    -2.211105085956572
+  ],
+  "bond_log_scale": [
+    0.02681456637324524,
+    0.02681456637324524,
+    0.02681456637324524,
+    0.02681456637324524
+  ],
+  "chart": "log-bond_logit-angle_quotient_BAT_v2",
+  "chiral_torsion_index": -1,
+  "chiral_torsion_sign": 0,
+  "chirality_atoms": [
+    -1,
+    -1,
+    -1,
+    -1
+  ],
+  "chirality_sign": 0,
+  "diagnostic_chirality_atoms": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "dimension": 9,
+  "euclidean_dim": 7,
+  "jacobian_measure": "rigid_motion_quotient_v1",
+  "order": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "periodic_dim": 2,
+  "reference_torsions_rad": [
+    2.0943951023931957,
+    -2.0943951023931957
+  ],
+  "refs": [
+    [
+      -1,
+      -1,
+      -1
+    ],
+    [
+      0,
+      -1,
+      -1
+    ],
+    [
+      0,
+      1,
+      -1
+    ],
+    [
+      0,
+      1,
+      2
+    ],
+    [
+      0,
+      1,
+      2
+    ]
+  ],
+  "schema_version": 2,
+  "source_mean": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "source_variance": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+  ]
+}

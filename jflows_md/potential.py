@@ -16,11 +16,17 @@ from .system import Molecular_Bundle
 
 KB_KJ_MOL_K = 0.00831446261815324
 
-__all__ = ["KB_KJ_MOL_K", "Molecular_Potential"]
+__all__ = ["KB_KJ_MOL_K", "Molecular_Potential", "Regularized_Molecular_Potential"]
 
 
 class Molecular_Potential(Potential):
-    """Physical reduced potential ``beta E(x(q)) - log J(q)``."""
+    """Physical reduced potential ``beta E(x(q)) - log J(q)``.
+
+    ``regularized((e, r))`` returns the two-parameter regularized potential
+    ``U^{rho}`` of the manuscript; this class itself carries no energy
+    regularization, and a non-finite force-field value stays non-finite
+    (the importance-weight screen gives it weight zero).
+    """
 
     forcefield: Amber_OBC_Force_Field
     coordinates: Internal_Coordinates
@@ -90,6 +96,10 @@ class Molecular_Potential(Potential):
         reduced["potential"] = reduced["total"] - logdet
         return reduced
 
+    def reduced_energy(self, q: Array) -> Array:
+        """Reduced energy ``beta E(x(q))`` without the Jacobian."""
+        return self.beta * self.physical_energy(q)
+
     def __call__(self, q: Array) -> Array:
         x, logdet = self.coordinates.to_cartesian(q)
         return self.beta * self.forcefield(x) - logdet
@@ -109,12 +119,21 @@ class Molecular_Potential(Potential):
         )
 
     def regularized(self, rg_param) -> "Regularized_Molecular_Potential":
-        """Return the ``(energy threshold, pair floor)`` surrogate."""
+        """The ``rho = (e, r)`` surrogate: energy threshold ``e`` [kJ/mol], pair floor ``r`` [nm]."""
         return Regularized_Molecular_Potential(self, rg_param)
 
 
 class Regularized_Molecular_Potential(Potential):
-    """Reference-relative energy compression with a nonbonded pair floor."""
+    """The two-parameter regularized potential ``U^{rho}`` of the manuscript.
+
+    With ``rho = (e, r)``: the regular and exception nonbonded pair distances
+    are floored at ``r`` (nm), the excess ``Delta E`` of the floored energy over
+    the floored energy of the bundle reference geometry is compressed by
+    ``C_e(Delta E) = Delta E`` below ``e`` and ``e (1 + log(Delta E / e))``
+    above it (kJ/mol); the reduced potential is ``beta (E_star + C_e) - log J``.
+    The physical energy stays unregularized. ``e -> inf, r -> 0`` recovers
+    the base potential.
+    """
 
     base: Molecular_Potential
     rg_param: Array
@@ -123,7 +142,7 @@ class Regularized_Molecular_Potential(Potential):
     def __init__(self, base: Molecular_Potential, rg_param):
         self.base = base
         self.rg_param = jnp.asarray(rg_param, dtype=base.reference_positions_nm.dtype)
-        self.reference_energy_kj_mol = base.forcefield._energy_with_pair_distance_floor(
+        self.reference_energy_kj_mol = base.forcefield.energy_with_pair_distance_floor(
             base.reference_positions_nm[None], self.rg_param[1]
         )[0]
 
@@ -147,7 +166,7 @@ class Regularized_Molecular_Potential(Potential):
     def pair_distance_floor_nm(self) -> Array:
         return self.rg_param[1]
 
-    def _regularize_energy(self, energy: Array) -> Array:
+    def _compress(self, energy: Array) -> Array:
         excess = energy - self.reference_energy_kj_mol
         threshold = self.rg_param[0]
         active = excess > threshold
@@ -156,24 +175,33 @@ class Regularized_Molecular_Potential(Potential):
         return self.reference_energy_kj_mol + jnp.where(active, mapped, excess)
 
     def regularized_energy(self, q: Array) -> Array:
+        """``E_star + C_e(Delta E_r)`` in kJ/mol."""
         x = self.base.coordinates.to_cartesian(q)[0]
-        energy = self.base.forcefield._energy_with_pair_distance_floor(
-            x, self.rg_param[1]
+        return self._compress(
+            self.base.forcefield.energy_with_pair_distance_floor(x, self.rg_param[1])
         )
-        return self._regularize_energy(energy)
+
+    def reduced_energy(self, q: Array) -> Array:
+        return self.beta * self.regularized_energy(q)
 
     def __call__(self, q: Array) -> Array:
         x, logdet = self.base.coordinates.to_cartesian(q)
-        energy = self.base.forcefield._energy_with_pair_distance_floor(
-            x, self.rg_param[1]
+        energy = self._compress(
+            self.base.forcefield.energy_with_pair_distance_floor(x, self.rg_param[1])
         )
-        return self.base.beta * self._regularize_energy(energy) - logdet
+        return self.beta * energy - logdet
 
     def physical_energy(self, q: Array) -> Array:
         return self.base.physical_energy(q)
+
+    def cartesian(self, q: Array) -> Array:
+        return self.base.cartesian(q)
 
     def reference_internal(self) -> Array:
         return self.base.reference_internal()
 
     def support_mask(self, x: Array) -> Array:
         return self.base.support_mask(x)
+
+    def source(self) -> Molecular_Source:
+        return self.base.source()

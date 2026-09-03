@@ -1,0 +1,28 @@
+{
+  "canonical_smiles": "C",
+  "coordinate_measure": "rigid_motion_quotient_v1",
+  "coordinate_spec": "coordinates.json",
+  "formal_charge": 0,
+  "formula": "CH4",
+  "model": {
+    "ambertools_version": "26.0.0",
+    "charge_equalization": "graph-class mean plus uniform least-squares neutrality shift",
+    "charges": "AM1-BCC with recorded graph-symmetry/neutrality projection",
+    "constraints": null,
+    "force_field": "GAFF2",
+    "implicit_solvent": "OBC1 (igb=2)",
+    "nonbonded_method": "NoCutoff",
+    "radii": "mbondi2",
+    "salt_molar": 0.0,
+    "sasa": "ACE",
+    "solute_dielectric": 1.0,
+    "solvent_dielectric": 78.5
+  },
+  "name": "methane_gaff2_am1bcc_obc1",
+  "openmm_version": "8.5.2",
+  "schema_version": 1,
+  "system_spec": "system.json",
+  "target": "methane",
+  "temperature_kelvin": 300.0,
+  "validation_spec": "validation.json"
+}

@@ -16,13 +16,22 @@ from jflows_md import (  # noqa: E402
     boltzmann_identity,
 )
 from jflows_md.boltzmann import (  # noqa: E402
+    boltzmann_FABX_G,
+    boltzmann_FAB_G,
+    boltzmann_forward_KLL1_G,
     boltzmann_forward_KLX_G,
     boltzmann_forward_KLXX_G,
 )
 from jflows_md.bundle_build import write_bundle  # noqa: E402
 from jflows_md.bundle_build.builder import build_coordinate_spec  # noqa: E402
 from jflows_md.core.domain import Mixed_Domain  # noqa: E402
-from jflows_md.train import train_forward_KLX_G, train_forward_KLXX_G  # noqa: E402
+from jflows_md.train import (  # noqa: E402
+    train_FABX_G,
+    train_FAB_G,
+    train_forward_KLL1_G,
+    train_forward_KLX_G,
+    train_forward_KLXX_G,
+)
 
 
 def main() -> None:
@@ -62,8 +71,13 @@ def main() -> None:
     for name in tuple(bundle_builder)[1:]:
         assert bundle_builder[name].kind is inspect.Parameter.KEYWORD_ONLY
 
-    for trainer in (train_forward_KLX_G, train_forward_KLXX_G):
+    for trainer in (
+        train_forward_KLX_G, train_forward_KLL1_G, train_FAB_G,
+        train_forward_KLXX_G, train_FABX_G,
+    ):
         parameters = inspect.signature(trainer).parameters
+        assert "mc_steps_1" in parameters and "mc_steps_2" in parameters
+        assert "mc_steps" not in parameters
         assert parameters["initialize_from_identity"].default is False
         assert "e_clip" not in parameters
         assert "energy_origin" not in parameters
@@ -71,36 +85,45 @@ def main() -> None:
         assert parameters["g_clip"].default == float("inf")
         assert parameters["lr_warmup"].default == 0
         assert "t_start" in parameters and "t_end" in parameters
-    for generator in (boltzmann_forward_KLX_G, boltzmann_forward_KLXX_G):
+    for generator in (
+        boltzmann_forward_KLX_G, boltzmann_forward_KLL1_G, boltzmann_FAB_G,
+        boltzmann_forward_KLXX_G, boltzmann_FABX_G,
+    ):
         parameters = inspect.signature(generator).parameters
         assert parameters["initialize_from_identity"].default is True
-        assert parameters["rg_param_0"].default is inspect.Parameter.empty
-        assert parameters["rg_param_1"].default is inspect.Parameter.empty
+        assert parameters["screen_fraction"].default == 1e-4
+        assert parameters["rg_param_0"].default is None and "tau_smc" not in parameters
         assert "flow_dir" not in parameters
         assert "resume" not in parameters
         assert "run_dir" not in parameters
         assert parameters["u_clip"].default == float("inf")
         assert parameters["g_clip"].default == float("inf")
         assert parameters["lr_warmup"].default == 0
+    assert inspect.signature(boltzmann_forward_KLXX_G).parameters["coeff_qt"].default == 0.0
+    # the FAB losses carry no target-measure coefficient
+    for fab in (train_FAB_G, train_FABX_G, boltzmann_FAB_G, boltzmann_FABX_G):
+        assert "coeff_lambda" not in inspect.signature(fab).parameters
+    for mixture in (train_FABX_G, boltzmann_FABX_G):
+        assert "coeff_theta" in inspect.signature(mixture).parameters
     identity = inspect.signature(boltzmann_identity).parameters
     assert tuple(identity) == (
         "x_valid",
         "source",
         "target",
-        "ladder",
         "mc_dt",
-        "mc_steps",
-        "rg_param_0",
-        "rg_param_1",
+        "mc_steps_2",
         "monitor",
         "bg_param",
         "chunks",
         "mc_image_radius",
         "seed",
+        "screen_fraction",
+        "rg_param_0",
+        "rg_param_1",
     )
     assert not {
-        "flow", "pool_size", "batch_size", "train_steps", "lr",
-        "checkpoint", "initialize_from_identity",
+        "flow", "pool_size", "batch_size", "steps_total", "lr",
+        "checkpoint", "initialize_from_identity", "ladder",
     } & set(identity)
 
     domain = Mixed_Domain(2, 1)
@@ -111,18 +134,22 @@ def main() -> None:
     assert source(samples).shape == (4,)
     identity, ess = train_forward_KLX_G(
         samples,
-        samples,
         source,
         source,
         Mixed_Identity(domain),
+        domain,
         4,
         2,
         1e-3,
+        1,
+        1e-2,
+        1,
+        1,
         g_clip=1.0,
     )
     assert identity(samples).shape == samples.shape
     assert ess.shape == (2,) and bool(jnp.isfinite(ess).all())
-    target = Molecular_Potential.from_bundle("glycerol_gaff2_am1bcc_obc1")
+    target = Molecular_Potential.from_bundle("alanine_dipeptide_ff96_obc1")
     assert target.source().samples(jax.random.key(21), 1).dtype == jnp.float32
     print("PASS modern minimal molecular API")
 

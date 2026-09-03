@@ -1,16 +1,23 @@
 # Medium-level interfaces
 
-The medium level trains one inverse molecular flow on already prepared,
-fixed-shape sample pools. It combines molecular G-direction objectives,
+The medium level trains one inverse molecular flow between a source and a
+target potential. It combines molecular G-direction objectives, the
+flow-proposal SMC that manufactures the target batch inside every step,
 compiled Adam scans, deterministic key derivation, optional monitoring, and
-optional rematerialization. It does not select a stage point, construct its
-SMC target, sharpen the regularization, or persist a multi-stage run.
+optional rematerialization. It does not select a stage point or persist a
+multi-stage run.
 
 Public imports:
 
 ```python
 from jflows.train import Monitor
-from jflows_md.train import train_forward_KLX_G, train_forward_KLXX_G
+from jflows_md.train import (
+    train_forward_KLX_G,
+    train_forward_KLL1_G,
+    train_FAB_G,
+    train_forward_KLXX_G,
+    train_FABX_G,
+)
 from jflows_md.artifacts import (
     save_flow, load_flow,
     save_samples, load_samples,
@@ -22,11 +29,14 @@ from jflows_md.artifacts import (
 
 Both trainers consume:
 
-- `target_samples`: a fixed target-side pool for the forward objective;
-- `source_samples`: a fixed source-side pool used for proposal diagnostics;
+- `x_valid`: the fixed source-side population from which every optimizer
+  step draws its source batch;
 - `source` and `target`: reduced potentials for the current stage;
 - `flow`: a `Mixed_NSF` or compatible mixed-domain G-flow;
-- `batch_size`, `train_steps`, and `lr`: Adam controls;
+- `domain`: the mixed domain of the target (`target.domain`);
+- `batch_size`, `steps_total`, and `lr`: Adam controls;
+- `ladder`, `mc_dt`, `mc_steps_1`, and `mc_steps_2`: the SMC levels and the
+  Langevin budgets of the target-batch manufacture;
 - `seed`: the deterministic trainer key namespace; and
 - optional `monitor`: normally `jflows.train.Monitor`.
 
@@ -36,9 +46,10 @@ Both return exactly:
 trained_flow, batch_ess_hist
 ```
 
-`batch_ess_hist.shape == (train_steps,)`. It measures the pre-update
-source-proposal ESS on the optimizer batch. It is a monitor, not an acceptance
-gate and not a result over the complete validation set.
+`batch_ess_hist.shape == (steps_total,)`. It is the screened ESS of the full
+proposal-to-target log weights of the pushforward batch, computed before the
+SMC resampling and rejuvenation of that batch. It is a monitor, not an
+acceptance gate and not a result over the complete validation set.
 
 The supplied flow is used as-is unless `initialize_from_identity=True`, in
 which case training starts from `flow.zeros()`. Equinox flows are immutable, so
@@ -46,23 +57,35 @@ always rebind the returned flow.
 
 ## Execution model
 
-Each trainer is one outer `eqx.filter_jit` function containing a complete Adam
-`lax.scan`:
+The committed compilation boundaries are part of the interface behavior:
 
 ```text
-fixed input pools
-  -> compiled scan over train_steps
-     -> draw target/source rows
-     -> construct the objective batch
-     -> evaluate loss and gradients
-     -> apply one Adam update
-     -> record proposal ESS
-  -> trained flow and ESS history
+KLX
+  -> one outer eqx.filter_jit call
+  -> one lax.scan containing all steps_total Adam steps
+
+KLXX
+  -> eager chunked mixed_quench_and_temper pool construction
+  -> one compiled lax.scan containing all steps_total Adam steps
 ```
 
-The fixed pool shapes, batch size, training length, flow architecture, and
-checkpoint choice participate in compilation. High-level SMC, QT, and
-sharpening remain outside this medium-level interface.
+Inside the scan every step:
+
+```text
+draw batch_size rows without replacement from x_valid
+  -> flow_target_batch through the current flow (ladder levels,
+     mc_steps_1 per intermediate level, mc_steps_2 on the last): target
+     batch y, pushforward y_bar,
+     proposal log weights
+  -> evaluate the loss and its gradient on the detached batch
+  -> apply one guarded Adam update
+  -> record the screened batch ESS
+```
+
+Keeping the KLXX quench and temper outside the enclosing optimizer JIT makes
+its `chunks` partition active at the pool boundary. The population size of
+`x_valid`, the batch size, the training length, the flow architecture, and
+the checkpoint choice participate in compilation.
 
 ## Common controls
 
@@ -73,10 +96,15 @@ sharpening remain outside this medium-level interface.
 <tr><th>Control</th><th>Meaning</th></tr>
 </thead>
 <tbody>
-<tr><td><code>batch_size</code></td><td>rows drawn without replacement from the target and source pools</td></tr>
-<tr><td><code>train_steps</code></td><td>number of Adam updates</td></tr>
+<tr><td><code>batch_size</code></td><td>source rows drawn without replacement from <code>x_valid</code> at every step</td></tr>
+<tr><td><code>steps_total</code></td><td>number of Adam updates</td></tr>
 <tr><td><code>lr</code></td><td>Adam learning rate</td></tr>
-<tr><td><code>coeff_lambda</code></td><td>coefficient of the target-sample X penalty</td></tr>
+<tr><td><code>ladder</code></td><td>SMC levels used to manufacture one target batch</td></tr>
+<tr><td><code>mc_dt</code>, <code>mc_steps_1</code></td><td>MALA step size, and the MALA steps used only on the intermediate SMC levels <code>1 .. M-1</code> of every manufactured batch</td></tr>
+<tr><td><code>mc_steps_2</code></td><td>MALA steps of every other rejuvenation: the last SMC level, the quench-and-temper rows drawn for the KLXX and FABX mixture batch, and the temper of the quench-and-temper pool (and its rejuvenation after the <code>coeff_qt</code> resampling)</td></tr>
+<tr><td><code>mc_image_radius</code></td><td>periodic wrapped-normal image radius of the MALA kernels</td></tr>
+<tr><td><code>coeff_lambda</code></td><td>coefficient of the target-batch variation term; <code>0</code> gives the forward KL</td></tr>
+<tr><td><code>screen_fraction</code></td><td>fraction of the largest log-ratios removed from the loss, and of the largest log weights removed from the batch ESS and the SMC resampling weights (default <code>SCREEN_FRACTION = 1e-4</code>)</td></tr>
 <tr><td><code>seed</code></td><td>integer or JAX value folded into the trainer namespace</td></tr>
 <tr><td><code>checkpoint</code></td><td>rematerialize the loss calculation during reverse-mode differentiation</td></tr>
 <tr><td><code>u_clip</code></td><td>exclude nonfinite target-energy rows and, when finite, rows above this absolute energy threshold</td></tr>
@@ -92,10 +120,20 @@ sharpening remain outside this medium-level interface.
 `checkpoint=True` changes the memory/runtime tradeoff by recomputing the loss
 during the backward pass. It does not change the mathematical objective.
 
-Rows with nonfinite target energies or nonfinite log-density ratios never enter
-the molecular loss. Adam commits parameters, both moment trees, and its update
-counter atomically only when the loss, gradients, and complete candidate state
-are finite. A rejected step therefore cannot poison a later finite update.
+Two screens act on every batch. The energy screen `u_clip` removes rows with
+nonfinite target energies and, when `u_clip` is finite, rows above it
+(clashes). The top screen removes the `screen_fraction` largest log-ratios
+`z = log(pi/nu)` among the kept rows, at least one row: a kept row whose
+log-ratio is far above the rest is a hole of the pushforward density at an
+ordinary target point and would dominate the batch. Rows with nonfinite
+log-ratios never enter the loss. The same `screen_fraction` screens the
+reported batch ESS and the resampling weights of the SMC levels.
+
+Adam (`beta1 = 0.9`, `beta2 = 0.999`, `eps = 1e-8`) commits parameters, both
+moment trees, and its update counter atomically only when the loss,
+gradients, and complete candidate state are finite and at least one row
+survived the screens. A rejected step therefore cannot poison a later finite
+update.
 
 ## Monitoring
 
@@ -105,100 +143,29 @@ The molecular trainers use the generic monitor:
 monitor = Monitor(every=20, prefix="[molecular KLX] ")
 ```
 
-The trainer calls `monitor.report(...)` from the compiled scan. The printed
-loss is the current optimizer objective, and ESS is the current source-batch
-proposal ESS. `t_start` and `t_end` are display labels; they do not alter the
-provided source or target potentials.
+The trainer calls `monitor.report(step, loss, ess, steps_total, t_start,
+t_end)` from the compiled scan. The printed loss is the current optimizer
+objective, and ESS is the screened batch ESS of the pushforward. `t_start`
+and `t_end` are display labels; they do not alter the provided source or
+target potentials.
 
 ## Molecular KLX trainer
 
 ```python
 train_forward_KLX_G(
-    target_samples,
-    source_samples,
-    source,
-    target,
-    flow,
-    batch_size,
-    train_steps,
-    lr,
-    coeff_lambda=1.0,
-    monitor=None,
-    seed=0,
-    checkpoint=False,
-    *,
-    initialize_from_identity=False,
-    u_clip=float("inf"),
-    g_clip=float("inf"),
-    lr_warmup=0,
-    t_start=0.0,
-    t_end=1.0,
-)
-```
-
-For target-side rows `y`, define
-
-```text
-x = G(y),
-z(y) = U_source(x) - U_target(y) - log|det J_G(y)|.
-```
-
-The per-step objective is
-
-```text
-mean z + lambda mean |z - z_permuted|.
-```
-
-The first term is forward KL up to a target-only constant. The second controls
-the spread of the log density ratio on target samples. At each scan step the
-trainer independently draws target rows, source rows, and a permutation.
-
-The source rows are mapped with `flow.inv_and_ladj` only to compute the
-pre-update proposal ESS:
-
-```text
-log w = U_source(x_source) - U_target(G^{-1}(x_source))
-        + log|det J_G^{-1}(x_source)|.
-```
-
-Example:
-
-```python
-flow, batch_ess = train_forward_KLX_G(
-    target_samples,
-    source_samples,
-    source,
-    target,
-    flow,
-    batch_size=256,
-    train_steps=1000,
-    lr=1e-3,
-    coeff_lambda=1.0,
-    monitor=Monitor(100, "[KLX] "),
-)
-```
-
-Generate target-side proposals with `flow.inv(source_samples)`.
-
-## Molecular KLXX trainer
-
-```python
-train_forward_KLXX_G(
-    target_samples,
-    source_samples,
-    hat_samples,
+    x_valid,
     source,
     target,
     flow,
     domain,
     batch_size,
-    train_steps,
+    steps_total,
     lr,
+    ladder,
+    mc_dt,
+    mc_steps_1,
+    mc_steps_2,
     coeff_lambda=1.0,
-    coeff_alpha=0.5,
-    coeff_beta=0.5,
-    mc_dt=1e-3,
-    mc_steps=1,
     mc_image_radius=3,
     monitor=None,
     seed=0,
@@ -208,64 +175,201 @@ train_forward_KLXX_G(
     u_clip=float("inf"),
     g_clip=float("inf"),
     lr_warmup=0,
+    screen_fraction=SCREEN_FRACTION,
     t_start=0.0,
     t_end=1.0,
+    reject_requested=None,
+    target_data=None,
 )
 ```
 
-KLXX adds a second X penalty evaluated on a mixture of:
-
-- `y_hat`: rows sampled with replacement from `hat_samples`, then freshened by
-  mixed MALA at `target`; and
-- `y_bar`: current flow proposals obtained from source rows.
-
-The mixture resampling weights are `coeff_alpha` for every `y_hat` row and
-`coeff_beta` for every `y_bar` row. The resulting `batch_size` rows define the
-mixture log-density-ratio penalty. The target-sample KLX term remains present.
-
-Conceptually, the objective is
+Each step draws `batch_size` source rows `x` from `x_valid` and manufactures
+the target batch `y` through the current flow with `flow_target_batch`
+(`ladder` levels; `mc_steps_1` MALA steps on each intermediate level,
+`mc_steps_2` on the last). The batch is
+detached: sample locations are not differentiated through. For the target
+rows `y`, define
 
 ```text
-KL term on target_samples
-+ lambda X term on target_samples
-+ (alpha + beta)^2 X term on the resampled hat/proposal mixture.
+z(y) = U_source(G(y)) - U_target(y) - log|det J_G(y)|.
 ```
 
-The direct trainer does not create `hat_samples`; callers prepare that pool
-with `mixed_quench_and_temper` or another method. It also has no `chunks`
-argument: only the selected `batch_size` hat rows are MALA-freshened inside
-the compiled scan.
+The per-step objective is the screened mean of `z` plus `coeff_lambda` times
+its exact sorted variation,
+
+```text
+mean(z) + coeff_lambda * mean_{i != j}(abs(z_i - z_j)),
+```
+
+where the second term is the exact mean of `|z_i - z_j|` over all pairs of
+the kept rows evaluated by one sort (`jflows.train._variation`, the Gini mean
+difference); there is no random pairing. The first term is the forward KL up
+to a target-only constant. `coeff_lambda = 0` is the forward KL.
+
+The batch ESS of the step is the screened ESS of the proposal log weights
+returned by the SMC,
+
+```text
+log w = U_source(x) - U_target(G^{-1}(x)) + log|det J_{G^{-1}}(x)|,
+```
+
+evaluated on the pushforward of the source batch before the levels moved it.
+
+Example:
 
 ```python
-hat_samples, _ = mixed_quench_and_temper(
-    jax.random.key(3),
-    source_samples,
-    target,
-    target.domain,
-    melt=1.0,
-    opt_alpha=1e-2,
-    opt_steps=200,
-    mc_dt=1e-4,
-    mc_steps=20,
-    chunks=8,
-)
-
-flow, batch_ess = train_forward_KLXX_G(
-    target_samples,
-    source_samples,
-    hat_samples,
+flow, batch_ess = train_forward_KLX_G(
+    x_valid,
     source,
     target,
     flow,
     target.domain,
     batch_size=256,
-    train_steps=1000,
+    steps_total=1000,
     lr=1e-3,
+    ladder=4,
+    mc_dt=1e-3,
+    mc_steps_1=20,
+    mc_steps_2=100,
     coeff_lambda=1.0,
+    monitor=Monitor(100, "[KLX] "),
+)
+```
+
+Generate target-side proposals with `flow.inv(x_valid)`.
+
+## Data-driven training
+
+`target_data` (KLX, KLL1, KLXX) replaces the SMC target surrogate by a given
+target sample set: every step draws its `batch_size` target rows from that
+array (without replacement within the step), the loss and its screens are
+unchanged, and the reported batch ESS is that of the pushforward of the
+source batch through the current map. For KLXX the pushforward half of the
+mixture is that same detached pushforward. FAB and FABX have no data-driven
+form, since their batches come from `pi^2 / nu`. `reject_requested` is the
+manual rejection of `doc/03-high-level.md`, read within one gradient step.
+
+## Molecular KLL1 and FAB trainers
+
+`train_forward_KLL1_G` has the signature of `train_forward_KLX_G` and
+replaces the variation by the dispersion of the log-ratio, the mean absolute
+deviation of `z` from its screened batch mean (`jflows.train._dispersion`),
+so the loss is the forward KL plus `coeff_lambda` times that dispersion.
+
+`train_FAB_G` has the same signature without `coeff_lambda`. Each step
+manufactures its batch from `pi^2 / nu` with `flow_fab_batch` (`ladder`
+levels to the target, then `ladder` further levels on to `pi^2 / nu`) and
+minimizes the screened mean log-ratio over it, whose parameter gradient is
+that of the alpha = 2 divergence; there is no penalty term and no replay
+buffer. The reported batch ESS is the phase-1 proposal ESS, as for the
+forward KL family. Its intermediate levels differentiate through the flow,
+so a step costs more than a KLX step at the same `mc_steps_1`.
+
+## Molecular KLXX trainer
+
+```python
+train_forward_KLXX_G(
+    x_valid,
+    source,
+    target,
+    flow,
+    domain,
+    pool_size,
+    batch_size,
+    steps_total,
+    lr,
+    ladder,
+    melt,
+    opt_alpha,
+    opt_steps,
+    mc_dt,
+    mc_steps_1,
+    mc_steps_2,
+    coeff_lambda=1.0,
+    coeff_theta=1.0,
     coeff_alpha=0.5,
-    coeff_beta=0.5,
-    mc_dt=1e-4,
-    mc_steps=1,
+    coeff_qt=0.0,
+    mc_image_radius=3,
+    monitor=None,
+    seed=0,
+    checkpoint=False,
+    *,
+    chunks=1,
+    initialize_from_identity=False,
+    u_clip=float("inf"),
+    g_clip=float("inf"),
+    lr_warmup=0,
+    screen_fraction=SCREEN_FRACTION,
+    t_start=0.0,
+    t_end=1.0,
+    reject_requested=None,
+    target_data=None,
+)
+```
+
+KLXX augments KLX with a second variation term evaluated on a mixture batch.
+Before the optimizer scan it builds the quench-and-temper pool with
+`mixed_quench_and_temper`:
+
+- `pool_size=0`: quench and temper the complete `x_valid` population;
+- `pool_size>0`: draw a random subset of that many rows (with replacement)
+  from `x_valid` first.
+
+The temper of the pool uses `mc_steps_2` MALA steps, `melt`, `opt_alpha`, and
+`opt_steps` control the melt and the L-BFGS quench, and `coeff_qt > 0`
+resamples the tempered pool by `exp(-coeff_qt * U_target)` and rejuvenates it
+again, which removes tempered rows left at high energy. `chunks` is passed
+directly into the quench and temper.
+
+During each training step:
+
+1. draw `batch_size` source rows from `x_valid` and manufacture the target
+   batch `y` through the current flow with `flow_target_batch`, keeping its
+   pushforward as the detached `y_bar` (no second inverse pass);
+2. draw `y_hat` from the pool (with replacement) and rejuvenate it at
+   `target` with `mc_steps_2` MALA steps;
+3. resample `batch_size` rows of the concatenation of `y_hat` and `y_bar`
+   with weights `coeff_alpha` on every `y_hat` row and `1 - coeff_alpha` on
+   every `y_bar` row, the mixture batch `y_mix`; and
+4. minimize the target KLX term plus `coeff_theta` times the variation of
+   the log-ratio over the mixture batch.
+
+The complete loss is
+
+```text
+mean(z) + coeff_lambda * mean_{i != j}(abs(z_i - z_j))
+        + coeff_theta  * mean_{i != j}(abs(z_mix,i - z_mix,j)),
+```
+
+with `z` on the target batch, `z_mix` on the mixture batch, both variation
+terms the exact sorted pair means, and both batches passed through the energy
+screen and the top screen separately. `coeff_lambda` weights the
+target-batch variation, `coeff_theta` the mixture variation, and
+`coeff_alpha` is the quench-and-temper proportion of the mixture.
+
+```python
+flow, batch_ess = train_forward_KLXX_G(
+    x_valid,
+    source,
+    target,
+    flow,
+    target.domain,
+    pool_size=0,
+    batch_size=256,
+    steps_total=1000,
+    lr=1e-3,
+    ladder=4,
+    melt=1.0,
+    opt_alpha=1e-2,
+    opt_steps=200,
+    mc_dt=1e-3,
+    mc_steps_1=20,
+    mc_steps_2=100,
+    coeff_lambda=1.0,
+    coeff_theta=1.0,
+    coeff_alpha=0.5,
+    coeff_qt=0.0,
+    chunks=8,
 )
 ```
 
@@ -282,14 +386,16 @@ initialization policy when interpreting optimization results.
 ## Held-out evaluation
 
 The returned batch ESS history is not a validation estimate. Evaluate the
-trained G-flow on a complete held-out source population:
+trained G-flow on a complete held-out source population with the screened
+ESS the generators use:
 
 ```python
-from jflows.utils import compute_ESS_log
+from jflows_md.utils import SCREEN_FRACTION, compute_ESS_log
 
 proposal, inverse_ladj = flow.inv_and_ladj(x_valid)
+proposal = target.domain.wrap(proposal)
 log_weight = source(x_valid) - target(proposal) + inverse_ladj
-valid_ess = compute_ESS_log(log_weight)
+valid_ess = compute_ESS_log(log_weight, SCREEN_FRACTION)
 ```
 
 Keep the weights in log form. For difficult molecular targets, report ESS
@@ -328,7 +434,7 @@ history = load_history("history.npz")
 
 </div>
 
-These helpers save individual medium-level objects. Use the high-level
+These helpers store individual medium-level objects. Use the high-level
 Boltzmann writer/loader when accepted-stage atomicity and resume state are
 required.
 
@@ -341,21 +447,27 @@ required.
 <tr><th>Trainer</th><th>Use when</th><th>Extra input</th></tr>
 </thead>
 <tbody>
-<tr><td><code>train_forward_KLX_G</code></td><td>a fixed target pool adequately represents the stage</td><td>none</td></tr>
-<tr><td><code>train_forward_KLXX_G</code></td><td>an independently broadened pool should regularize proposal coverage</td><td><code>hat_samples</code>, domain, and hat-MALA controls</td></tr>
+<tr><td><code>train_forward_KLX_G</code></td><td>the forward KL (<code>coeff_lambda=0</code>) or the KLX on SMC-manufactured target batches suffices</td><td>none</td></tr>
+<tr><td><code>train_forward_KLL1_G</code></td><td>the L1 dispersion of the log-ratio should replace the variation</td><td>none</td></tr>
+<tr><td><code>train_FAB_G</code></td><td>the alpha = 2 divergence on exact two-phase SMC batches is wanted</td><td>none</td></tr>
+<tr><td><code>train_forward_KLXX_G</code></td><td>a quench-and-temper pool should regularize the log-ratio on a wider mixture</td><td><code>pool_size</code>, <code>melt</code>, <code>opt_alpha</code>, <code>opt_steps</code>, <code>coeff_theta</code>, <code>coeff_alpha</code>, <code>coeff_qt</code>, <code>chunks</code></td></tr>
+<tr><td><code>train_FABX_G</code></td><td>the FAB batch should carry the KLXX mixture term</td><td>the KLXX inputs without <code>coeff_lambda</code></td></tr>
 </tbody>
 </table>
 
 </div>
 
-Use the high-level generators when target-pool construction, stage-size
-selection, trained-versus-identity selection, regularization sharpening, and
-retry policy should be coordinated automatically.
+Use the high-level generators when stage-size selection,
+trained-versus-identity selection, and retry policy should be coordinated
+automatically.
 
 ## Executable references
 
-- `smoke/test_float32_training.py`: bounded default-float32 direct training.
-- `smoke/test_initialization.py`: supplied-flow and identity starts.
-- `smoke/test_mixed_training.py`: KLX/KLXX returns and tiny training paths.
+- `smoke/test_float32_training.py`: bounded default-float32 direct training,
+  the guarded Adam update, gradient clipping, warmup, and the batch ESS
+  against the screened ESS of the pushforward weights.
+- `smoke/test_initialization.py`: the `initialize_from_identity` defaults of
+  the trainers and generators.
 - `smoke/test_artifacts.py`: direct artifact round trips.
-- `smoke/test_api_consistency.py`: exact public signatures and return shape.
+- `smoke/test_api_consistency.py`: exact public signatures, a two-step
+  `train_forward_KLX_G` on `Mixed_Identity`, and return shapes.
