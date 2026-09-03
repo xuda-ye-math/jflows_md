@@ -30,6 +30,7 @@ EXPECTED_FILES = {
 EXPECTED_PUBLIC = {
     "__version__",
     "backend",
+    "Manual_Reject",
     "Mixed_Identity",
     "Mixed_NSF",
     "Molecular_Bundle",
@@ -41,7 +42,9 @@ EXPECTED_PUBLIC = {
     "boltzmann_FAB_G",
     "boltzmann_forward_KLL1_G",
     "boltzmann_forward_KLX_G",
+    "boltzmann_forward_KLX_G_fixed",
     "boltzmann_forward_KLXX_G",
+    "boltzmann_forward_KLXX_G_fixed",
     "mixed_hmc",
     "mixed_mala",
     "mixed_quench_and_temper",

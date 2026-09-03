@@ -188,8 +188,10 @@ def main() -> None:
             f"force_rmse={comparison.force_rmse_kj_mol_nm:.2e}"
         )
 
+    # methane: the first three atoms of the coordinate order are atoms 0, 1, 2,
+    # so the three-atom truncation stays a permutation of atom indices.
     check_rigid_motion_quotient_jacobian(
-        Molecular_Bundle.load("alanine_dipeptide_ff96_obc1")
+        Molecular_Bundle.load("methane_gaff2_am1bcc_obc1")
     )
     print("PASS rigid-motion-quotient BAT Jacobian")
     check_temperature_override()
